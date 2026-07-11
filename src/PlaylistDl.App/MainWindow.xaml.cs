@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private PlaylistInfo? _playlist;
     private bool _jobRunning;
     private bool _syncingSelectAll;
+    private bool _uiReady;
     private HashSet<string> _activeTrackIds = [];
     private readonly List<TrackItem> _failedTracks = [];
     private SavedJob? _savedJob;
@@ -41,6 +42,7 @@ public partial class MainWindow : Window
         _tracksView.Filter = TrackPassesFilter;
         _backend.EventReceived += Backend_EventReceived;
         _backend.DiagnosticReceived += (_, message) => Dispatcher.Invoke(() => StatusText.Text = message);
+        _uiReady = true;
         _savedJob = _jobStore.Load();
         ResumeButton.Visibility = _savedJob is null ? Visibility.Collapsed : Visibility.Visible;
         if (_savedJob is not null)
@@ -71,7 +73,7 @@ public partial class MainWindow : Window
 
     private void SelectAllBox_Toggled(object sender, RoutedEventArgs e)
     {
-        if (_syncingSelectAll)
+        if (!_uiReady || _syncingSelectAll)
         {
             return;
         }
