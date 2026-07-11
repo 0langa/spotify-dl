@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/PlaylistDl.App/PlaylistDl.App.csproj" />
+  <Project Path="tests/PlaylistDl.App.Tests/PlaylistDl.App.Tests.csproj" />
+</Solution>

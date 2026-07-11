@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>PlaylistDL</AssemblyName>
+    <RootNamespace>PlaylistDl.App</RootNamespace>
+    <ApplicationIcon />
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('../../artifacts/tools/playlistdl-tools.zip')">
+    <EmbeddedResource Include="../../artifacts/tools/playlistdl-tools.zip" LogicalName="PlaylistDl.Tools" />
+  </ItemGroup>
+</Project>

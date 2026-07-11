@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without v prefix
+        required: true
+        default: 1.0.0
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: astral-sh/setup-uv@v6
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.3
+      - name: Install FFmpeg
+        run: choco install ffmpeg --no-progress -y
+      - name: Restore locked dependencies
+        run: uv sync --project backend --extra dev --locked
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - name: Build standalone executable
+        run: ./scripts/build-release.ps1 -Version '${{ steps.version.outputs.value }}'
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = 'v${{ steps.version.outputs.value }}'
+          $assets = @(
+            'artifacts/release/PlaylistDL.exe',
+            'artifacts/release/SHA256SUMS.txt',
+            'THIRD_PARTY_NOTICES.md',
+            'LICENSE'
+          )
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --title "Playlist DL ${{ steps.version.outputs.value }}" --generate-notes
+          }

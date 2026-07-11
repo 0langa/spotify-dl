@@ -1,0 +1,104 @@
+<Window x:Class="PlaylistDl.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Playlist DL" Height="760" Width="1180" MinHeight="620" MinWidth="860"
+        WindowStartupLocation="CenterScreen">
+  <Grid Background="#111318">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <Border Grid.Row="0" Background="#181B22" Padding="24,18">
+      <DockPanel LastChildFill="False">
+        <StackPanel DockPanel.Dock="Left">
+          <TextBlock Text="Playlist DL" FontSize="26" FontWeight="SemiBold" Foreground="White" />
+          <TextBlock Text="Personal playlist matching and MP3 download" Foreground="#AEB6C5" Margin="0,3,0,0" />
+        </StackPanel>
+        <Button DockPanel.Dock="Right" Content="Settings" Width="100" Click="SettingsButton_Click" />
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="1" Margin="24,20,24,12" Background="#1B1F27" CornerRadius="10" Padding="18">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBox x:Name="PlaylistUrlBox" Grid.Row="0" Grid.Column="0" Margin="0,0,10,0"
+                 VerticalContentAlignment="Center"
+                 ToolTip="Paste a public Spotify playlist URL"
+                 Text="" />
+        <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="1" Content="Analyze playlist"
+                Click="AnalyzeButton_Click" Background="#4F7DFF" Foreground="White" />
+        <Grid Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <TextBlock Text="Output" Foreground="#AEB6C5" VerticalAlignment="Center" Margin="0,0,10,0" />
+          <TextBox x:Name="OutputDirectoryBox" Grid.Column="1" Text="" IsReadOnly="True" />
+          <Button Grid.Column="2" Content="Choose folder" Margin="10,0,0,0" Click="ChooseFolderButton_Click" />
+        </Grid>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" Margin="24,0,24,12">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
+        <RowDefinition Height="*" />
+      </Grid.RowDefinitions>
+      <DockPanel Margin="2,0,2,10">
+        <TextBlock x:Name="PlaylistTitle" Text="Paste a playlist link to begin" FontSize="19" FontWeight="SemiBold" Foreground="White" />
+        <TextBlock x:Name="PlaylistSummary" DockPanel.Dock="Right" Foreground="#AEB6C5" VerticalAlignment="Center" />
+      </DockPanel>
+      <DataGrid Grid.Row="1" x:Name="TrackGrid" ItemsSource="{Binding Tracks}" AutoGenerateColumns="False"
+                IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column"
+                RowHeaderWidth="0" GridLinesVisibility="Horizontal" AlternatingRowBackground="#151820"
+                Background="#111318" Foreground="#E7EBF2" BorderBrush="#303642"
+                EnableRowVirtualization="True">
+        <DataGrid.Columns>
+          <DataGridTextColumn Header="#" Binding="{Binding Position}" Width="48" />
+          <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="2*" />
+          <DataGridTextColumn Header="Artist" Binding="{Binding ArtistText}" Width="1.5*" />
+          <DataGridTextColumn Header="Album" Binding="{Binding Album}" Width="1.5*" />
+          <DataGridTextColumn Header="Length" Binding="{Binding DurationText}" Width="70" />
+          <DataGridTemplateColumn Header="Progress" Width="160">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <Grid Margin="4">
+                  <ProgressBar Value="{Binding Progress}" Maximum="100" Height="16" />
+                  <TextBlock Text="{Binding Status}" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Grid>
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
+        </DataGrid.Columns>
+      </DataGrid>
+    </Grid>
+
+    <Border Grid.Row="3" Background="#181B22" Padding="24,14">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel>
+          <TextBlock x:Name="StatusText" Text="Ready" Foreground="White" />
+          <ProgressBar x:Name="OverallProgress" Height="5" Margin="0,8,20,0" Maximum="100" />
+        </StackPanel>
+        <Button Grid.Column="1" x:Name="CancelButton" Content="Cancel" IsEnabled="False" Margin="0,0,10,0" Click="CancelButton_Click" />
+        <Button Grid.Column="2" x:Name="DownloadButton" Content="Download MP3s" IsEnabled="False"
+                Background="#4F7DFF" Foreground="White" Click="DownloadButton_Click" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

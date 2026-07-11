@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Restore Python
+        run: uv sync --project backend --extra dev --locked
+      - name: Lint and test Python
+        run: |
+          uv run --project backend ruff check backend
+          uv run --project backend pytest
+      - name: Build and test .NET
+        run: |
+          dotnet restore PlaylistDl.slnx
+          dotnet build PlaylistDl.slnx --configuration Release --no-restore
+          dotnet test PlaylistDl.slnx --configuration Release --no-build
