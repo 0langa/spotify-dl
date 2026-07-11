@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 
+from playlistdl_backend import __version__
 from playlistdl_backend.bridge import Bridge
 
 
@@ -13,7 +14,7 @@ def test_ping_returns_protocol_response() -> None:
     Bridge(source, target).run()
 
     messages = [json.loads(line) for line in target.getvalue().splitlines()]
-    assert messages[0] == {"type": "ready", "version": "0.1.0", "protocol": 1}
+    assert messages[0] == {"type": "ready", "version": __version__, "protocol": 1}
     assert messages[1] == {"type": "pong", "request_id": "abc"}
 
 
