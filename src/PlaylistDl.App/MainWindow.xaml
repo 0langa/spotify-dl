@@ -105,13 +105,16 @@
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <StackPanel>
           <TextBlock x:Name="StatusText" Text="Ready" Foreground="White" />
           <ProgressBar x:Name="OverallProgress" Height="5" Margin="0,8,20,0" Maximum="100" />
         </StackPanel>
-        <Button Grid.Column="1" x:Name="CancelButton" Content="Cancel" IsEnabled="False" Margin="0,0,10,0" Click="CancelButton_Click" />
-        <Button Grid.Column="2" x:Name="DownloadButton" Content="Download MP3s" IsEnabled="False"
+        <Button Grid.Column="1" x:Name="RetryFailedButton" Content="Retry failed" Visibility="Collapsed"
+                Margin="0,0,10,0" Click="RetryFailedButton_Click" />
+        <Button Grid.Column="2" x:Name="CancelButton" Content="Cancel" IsEnabled="False" Margin="0,0,10,0" Click="CancelButton_Click" />
+        <Button Grid.Column="3" x:Name="DownloadButton" Content="Download MP3s" IsEnabled="False"
                 Background="#4F7DFF" Foreground="White" Click="DownloadButton_Click" />
       </Grid>
     </Border>

@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private bool _jobRunning;
     private bool _syncingSelectAll;
     private HashSet<string> _activeTrackIds = [];
+    private readonly List<TrackItem> _failedTracks = [];
 
     public ObservableCollection<TrackItem> Tracks { get; } = [];
 
@@ -118,6 +119,8 @@ public partial class MainWindow : Window
 
             PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
             FilterBox.Clear();
+            _failedTracks.Clear();
+            RetryFailedButton.Visibility = Visibility.Collapsed;
             UpdateSelectionUi();
             var sourceLabel = SourceLabel();
             StatusText.Text = $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready";
@@ -159,6 +162,7 @@ public partial class MainWindow : Window
 
         Directory.CreateDirectory(OutputDirectoryBox.Text);
         _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
+        RetryFailedButton.Visibility = Visibility.Collapsed;
         _jobRunning = true;
         AnalyzeButton.IsEnabled = false;
         DownloadButton.IsEnabled = false;
@@ -217,7 +221,7 @@ public partial class MainWindow : Window
             if (type == "track_progress")
             {
                 var trackId = message.GetProperty("track_id").GetString();
-                var track = Tracks.FirstOrDefault(item => item.Id == trackId || item.SpotifyUrl == trackId);
+                var track = trackId is null ? null : FindTrack(trackId);
                 if (track is not null)
                 {
                     track.Progress = message.GetProperty("progress").GetInt32();
@@ -232,7 +236,14 @@ public partial class MainWindow : Window
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
-                StatusText.Text = type == "job_completed" ? "Downloads complete" : "Downloads cancelled";
+                if (type == "job_completed")
+                {
+                    ApplyJobResults(JobResults.Parse(message));
+                }
+                else
+                {
+                    StatusText.Text = "Downloads cancelled";
+                }
             }
             else if (type == "error" && _jobRunning)
             {
@@ -243,6 +254,59 @@ public partial class MainWindow : Window
                 StatusText.Text = message.GetProperty("message").GetString() ?? "Download failed";
             }
         });
+    }
+
+    private void ApplyJobResults(IReadOnlyList<DownloadResult> results)
+    {
+        _failedTracks.Clear();
+        foreach (var result in results)
+        {
+            var track = FindTrack(result.TrackId);
+            if (track is null)
+            {
+                continue;
+            }
+
+            if (result.Success)
+            {
+                track.Progress = 100;
+                track.Status = "Done";
+            }
+            else
+            {
+                track.Status = "Failed";
+                _failedTracks.Add(track);
+            }
+        }
+
+        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
+        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+        var succeeded = results.Count(result => result.Success);
+        StatusText.Text = _failedTracks.Count == 0
+            ? $"Downloads complete — {succeeded} done"
+            : $"Downloads finished — {succeeded} done, {_failedTracks.Count} failed";
+    }
+
+    private TrackItem? FindTrack(string trackId) =>
+        Tracks.FirstOrDefault(item => item.Id == trackId || item.SpotifyUrl == trackId);
+
+    private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_failedTracks.Count == 0)
+        {
+            return;
+        }
+
+        var retryTracks = _failedTracks.ToList();
+        foreach (var track in retryTracks)
+        {
+            track.Progress = 0;
+            track.Status = "Queued";
+        }
+
+        RetryFailedButton.Visibility = Visibility.Collapsed;
+        await StartJobAsync(retryTracks);
     }
 
     private void UpdateOverallProgress()
