@@ -104,6 +104,7 @@ public partial class MainWindow : Window
     {
         "album" => "album",
         "track" => "track",
+        "import" => "import",
         _ => "playlist",
     };
 
@@ -375,6 +376,17 @@ public partial class MainWindow : Window
     private async Task ResolveAsync(string url, SavedJob? restore = null)
     {
         var response = await _backend.RequestAsync("resolve", new { url });
+        ApplyResolvedPlaylist(response, restore);
+    }
+
+    private async Task ImportManifestAsync(string path, SavedJob? restore = null)
+    {
+        var response = await _backend.RequestAsync("import_manifest", new { path });
+        ApplyResolvedPlaylist(response, restore);
+    }
+
+    private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
+    {
         _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Tracks.Clear();
         foreach (var track in _playlist?.Tracks ?? [])
@@ -422,7 +434,14 @@ public partial class MainWindow : Window
             {
                 OutputDirectoryBox.Text = saved.OutputDirectory;
             }
-            await ResolveAsync(saved.SourceUrl, saved);
+            if (saved.SourceType == "import")
+            {
+                await ImportManifestAsync(saved.SourceUrl, saved);
+            }
+            else
+            {
+                await ResolveAsync(saved.SourceUrl, saved);
+            }
             _savedJob = saved;
         }
         catch (Exception ex)
@@ -447,6 +466,7 @@ public partial class MainWindow : Window
         {
             SourceUrl = _playlist.SourceUrl,
             SourceName = _playlist.Name,
+            SourceType = _playlist.SourceType,
             OutputDirectory = OutputDirectoryBox.Text,
             Tracks = Tracks.Select(track => new SavedTrack
             {
@@ -466,6 +486,37 @@ public partial class MainWindow : Window
         catch (IOException)
         {
             // Downloads remain usable if local job persistence is unavailable.
+        }
+    }
+
+    private async void ImportManifestButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Import track manifest",
+            Filter = "Track manifests (*.csv;*.json)|*.csv;*.json|CSV files (*.csv)|*.csv|JSON files (*.json)|*.json",
+            Multiselect = false,
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        SetBusy(true, "Importing track manifest…");
+        try
+        {
+            PlaylistUrlBox.Text = dialog.FileName;
+            await ImportManifestAsync(dialog.FileName);
+            SaveCurrentJob();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Import failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = "Track manifest import failed";
+        }
+        finally
+        {
+            SetBusy(false);
         }
     }
 

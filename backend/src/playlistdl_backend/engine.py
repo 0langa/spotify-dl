@@ -16,6 +16,7 @@ from spotdl.types.playlist import Playlist
 from spotdl.types.song import Song
 from spotdl.utils.spotify import SpotifyClient
 
+from playlistdl_backend.manifest import load_manifest
 from playlistdl_backend.models import PlaylistDto, TrackDto
 from playlistdl_backend.playlist_file import write_m3u8
 
@@ -103,6 +104,23 @@ class Engine:
             cover_url=cover_url,
             source_url=url,
             source_type=source_type,
+            tracks=tracks,
+        )
+
+    def import_manifest(self, path: str) -> PlaylistDto:
+        name, songs = load_manifest(path)
+        playlist_id = uuid.uuid4().hex
+        self._songs[playlist_id] = songs
+        self._names[playlist_id] = name
+        tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
+        return PlaylistDto(
+            id=playlist_id,
+            name=name,
+            description="Imported track manifest",
+            owner="Local file",
+            cover_url="",
+            source_url=str(Path(path).expanduser().resolve()),
+            source_type="import",
             tracks=tracks,
         )
 

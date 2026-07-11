@@ -17,6 +17,7 @@ public sealed class JobStoreTests : IDisposable
         {
             SourceUrl = "https://open.spotify.com/playlist/example",
             SourceName = "Road trip",
+            SourceType = "import",
             OutputDirectory = @"C:\Music",
             Tracks =
             [
@@ -34,6 +35,7 @@ public sealed class JobStoreTests : IDisposable
 
         Assert.NotNull(restored);
         Assert.Equal("Road trip", restored.SourceName);
+        Assert.Equal("import", restored.SourceType);
         Assert.True(restored.Tracks.Single().IsComplete);
         Assert.Equal(@"C:\Music\song.mp3", restored.Tracks.Single().OutputPath);
     }

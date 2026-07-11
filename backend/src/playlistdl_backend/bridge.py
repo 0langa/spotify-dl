@@ -66,6 +66,16 @@ class Bridge:
                 }
             )
             return
+        if command == "import_manifest":
+            playlist = self._engine.import_manifest(str(request["path"]))
+            self.emit(
+                {
+                    "type": "playlist_resolved",
+                    "request_id": request_id,
+                    "playlist": playlist.to_dict(),
+                }
+            )
+            return
         if command == "start":
             if self._worker is not None and self._worker.is_alive():
                 raise RuntimeError("A download job is already running")

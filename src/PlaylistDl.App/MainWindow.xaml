@@ -34,14 +34,17 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <TextBox x:Name="PlaylistUrlBox" Grid.Row="0" Grid.Column="0" Margin="0,0,10,0"
                  VerticalContentAlignment="Center"
                  ToolTip="Paste a public Spotify playlist, album, or track URL"
                  Text="" />
-        <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="1" Content="Analyze link"
+        <Button Grid.Row="0" Grid.Column="1" Content="Import CSV/JSON" Margin="0,0,10,0"
+                Click="ImportManifestButton_Click" />
+        <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="2" Content="Analyze link"
                 Click="AnalyzeButton_Click" Background="#4F7DFF" Foreground="White" />
-        <Grid Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
+        <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />

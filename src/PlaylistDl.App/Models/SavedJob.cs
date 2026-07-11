@@ -6,6 +6,8 @@ public sealed class SavedJob
 
     public string SourceName { get; set; } = string.Empty;
 
+    public string SourceType { get; set; } = "playlist";
+
     public string OutputDirectory { get; set; } = string.Empty;
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
