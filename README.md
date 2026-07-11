@@ -21,26 +21,53 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 ## Features
 
 - Spotify public playlist, album, and single-track resolution through spotDL experimental resolver
+- CSV and JSON track-manifest import, including common Exportify columns
 - YouTube Music/YouTube matching and fallback
+- Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
 - Per-track and overall progress, duplicate scanning, batch cancellation
 - Per-track Done/Failed results with one-click retry of failed tracks
+- Restart-safe last-job resume with completed tracks and match overrides restored
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags and cover art
+- Configurable source folders and filename layouts, including album/track folder organization
 - Optional .m3u8 playlist export preserving track order, plus Open folder shortcut
 - Optional YouTube cookie file for authenticated/Premium formats
+- On-demand update check against published GitHub releases
 - One downloadable self-contained Windows x64 executable
+
+### Track manifest format
+
+Use **Import CSV/JSON** when Spotify resolution is unavailable or when metadata comes from another source. Every row requires a title and artist. Supported common fields include album, duration, Spotify URL/URI, ISRC, cover URL, year, release date, and track number.
+
+Minimal CSV:
+
+```csv
+title,artist,album,duration_seconds
+Song One,Artist One,Album One,185
+```
+
+Minimal JSON:
+
+```json
+{
+  "name": "My tracks",
+  "tracks": [
+    { "title": "Song One", "artist": "Artist One", "album": "Album One", "duration_seconds": 185 }
+  ]
+}
+```
 
 ## Known limitations
 
 - Public Spotify resolution uses experimental unofficial SpotAPI/spotipyFree path and may break after platform changes.
 - Cancellation takes effect after currently active download batch finishes.
-- Match selection is automatic; wrong or missing matches require rerunning through spotDL/manual tooling.
+- Automatic matching does not present ranked candidates; use the per-track Source button when an exact YouTube URL is needed.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.0.0
+./scripts/build-release.ps1 -Version 1.2.0
 ```
 
 Build freezes Python backend, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use.

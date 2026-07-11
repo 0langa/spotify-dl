@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 - 2026-07-12
+
+- Added restart-safe last-job persistence and resume; completed tracks and manual choices are restored after reopening the app.
+- Added per-track YouTube/YouTube Music source overrides while retaining Spotify/imported metadata for tags.
+- Added CSV and JSON track-manifest import, including Exportify-style column names, as a Spotify-independent metadata source.
+- Added configurable file organization: source-named folders and three safe filename/folder layouts.
+- Added an on-demand in-app check for newer published GitHub releases.
+- Added focused persistence, manifest, source validation, output layout, and update comparison regression tests.
+
 ## 1.1.0 - 2026-07-11
 
 - Added Spotify album and single-track link support alongside playlists, including locale-prefixed URLs.
