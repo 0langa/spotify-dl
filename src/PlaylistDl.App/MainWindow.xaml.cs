@@ -15,6 +15,7 @@ public partial class MainWindow : Window
 {
     private readonly BackendClient _backend = new();
     private readonly SettingsService _settingsService = new();
+    private readonly JobStore _jobStore = new();
     private readonly AppSettings _settings;
     private readonly ICollectionView _tracksView;
     private PlaylistInfo? _playlist;
@@ -22,6 +23,7 @@ public partial class MainWindow : Window
     private bool _syncingSelectAll;
     private HashSet<string> _activeTrackIds = [];
     private readonly List<TrackItem> _failedTracks = [];
+    private SavedJob? _savedJob;
 
     public ObservableCollection<TrackItem> Tracks { get; } = [];
 
@@ -35,7 +37,17 @@ public partial class MainWindow : Window
         _tracksView.Filter = TrackPassesFilter;
         _backend.EventReceived += Backend_EventReceived;
         _backend.DiagnosticReceived += (_, message) => Dispatcher.Invoke(() => StatusText.Text = message);
-        Closed += async (_, _) => await _backend.DisposeAsync();
+        _savedJob = _jobStore.Load();
+        ResumeButton.Visibility = _savedJob is null ? Visibility.Collapsed : Visibility.Visible;
+        if (_savedJob is not null)
+        {
+            ResumeButton.ToolTip = $"Resume {_savedJob.SourceName} from {_savedJob.UpdatedAt.LocalDateTime:g}";
+        }
+        Closed += async (_, _) =>
+        {
+            SaveCurrentJob();
+            await _backend.DisposeAsync();
+        };
     }
 
     private bool TrackPassesFilter(object item)
@@ -108,22 +120,8 @@ public partial class MainWindow : Window
         SetBusy(true, "Resolving playlist…");
         try
         {
-            var response = await _backend.RequestAsync("resolve", new { url });
-            _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            Tracks.Clear();
-            foreach (var track in _playlist?.Tracks ?? [])
-            {
-                track.PropertyChanged += Track_PropertyChanged;
-                Tracks.Add(track);
-            }
-
-            PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
-            FilterBox.Clear();
-            _failedTracks.Clear();
-            RetryFailedButton.Visibility = Visibility.Collapsed;
-            UpdateSelectionUi();
-            var sourceLabel = SourceLabel();
-            StatusText.Text = $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready";
+            await ResolveAsync(url);
+            SaveCurrentJob();
         }
         catch (Exception ex)
         {
@@ -181,6 +179,7 @@ public partial class MainWindow : Window
                 track_ids = jobTracks.Select(track => track.Id).ToList(),
                 write_m3u = _settings.WriteM3u,
             });
+        SaveCurrentJob();
     }
 
     private async void CancelButton_Click(object sender, RoutedEventArgs e)
@@ -244,6 +243,14 @@ public partial class MainWindow : Window
                 {
                     track.Progress = message.GetProperty("progress").GetInt32();
                     track.Status = message.GetProperty("status").GetString() ?? "Working";
+                    if (message.TryGetProperty("path", out var path) && path.ValueKind == JsonValueKind.String)
+                    {
+                        track.OutputPath = path.GetString();
+                    }
+                    if (track.Progress >= 100)
+                    {
+                        SaveCurrentJob();
+                    }
                 }
 
                 UpdateOverallProgress();
@@ -264,6 +271,7 @@ public partial class MainWindow : Window
                 else
                 {
                     StatusText.Text = "Downloads cancelled";
+                    SaveCurrentJob();
                 }
             }
             else if (type == "error" && _jobRunning)
@@ -273,6 +281,7 @@ public partial class MainWindow : Window
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
                 StatusText.Text = message.GetProperty("message").GetString() ?? "Download failed";
+                SaveCurrentJob();
             }
         });
     }
@@ -292,6 +301,7 @@ public partial class MainWindow : Window
             {
                 track.Progress = 100;
                 track.Status = "Done";
+                track.OutputPath = result.Path;
             }
             else
             {
@@ -313,6 +323,7 @@ public partial class MainWindow : Window
         }
 
         StatusText.Text = summary;
+        SaveCurrentJob();
     }
 
     private TrackItem? FindTrack(string trackId) =>
@@ -355,6 +366,101 @@ public partial class MainWindow : Window
         if (status is not null)
         {
             StatusText.Text = status;
+        }
+    }
+
+    private async Task ResolveAsync(string url, SavedJob? restore = null)
+    {
+        var response = await _backend.RequestAsync("resolve", new { url });
+        _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Tracks.Clear();
+        foreach (var track in _playlist?.Tracks ?? [])
+        {
+            var saved = restore?.Tracks.FirstOrDefault(item =>
+                (!string.IsNullOrEmpty(item.SpotifyUrl) && item.SpotifyUrl == track.SpotifyUrl) || item.Id == track.Id);
+            if (saved is not null)
+            {
+                track.IsSelected = saved.IsSelected && !saved.IsComplete;
+                track.Progress = saved.IsComplete ? 100 : 0;
+                track.Status = saved.IsComplete ? "Done" : "Ready";
+                track.OutputPath = saved.OutputPath;
+            }
+            track.PropertyChanged += Track_PropertyChanged;
+            Tracks.Add(track);
+        }
+
+        PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
+        FilterBox.Clear();
+        _failedTracks.Clear();
+        RetryFailedButton.Visibility = Visibility.Collapsed;
+        UpdateSelectionUi();
+        var sourceLabel = SourceLabel();
+        StatusText.Text = restore is null
+            ? $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready"
+            : $"Job restored — {Tracks.Count(track => track.Status == "Done")} complete, {Tracks.Count(track => track.IsSelected)} remaining";
+    }
+
+    private async void ResumeButton_Click(object sender, RoutedEventArgs e)
+    {
+        var saved = _jobStore.Load();
+        if (saved is null || string.IsNullOrWhiteSpace(saved.SourceUrl))
+        {
+            ResumeButton.Visibility = Visibility.Collapsed;
+            StatusText.Text = "No resumable job found";
+            return;
+        }
+
+        SetBusy(true, "Restoring last job…");
+        try
+        {
+            PlaylistUrlBox.Text = saved.SourceUrl;
+            if (Directory.Exists(saved.OutputDirectory) || !string.IsNullOrWhiteSpace(saved.OutputDirectory))
+            {
+                OutputDirectoryBox.Text = saved.OutputDirectory;
+            }
+            await ResolveAsync(saved.SourceUrl, saved);
+            _savedJob = saved;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Resume failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = "Could not restore the saved job";
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+    }
+
+    private void SaveCurrentJob()
+    {
+        if (_playlist is null || string.IsNullOrWhiteSpace(_playlist.SourceUrl))
+        {
+            return;
+        }
+
+        _savedJob = new SavedJob
+        {
+            SourceUrl = _playlist.SourceUrl,
+            SourceName = _playlist.Name,
+            OutputDirectory = OutputDirectoryBox.Text,
+            Tracks = Tracks.Select(track => new SavedTrack
+            {
+                Id = track.Id,
+                SpotifyUrl = track.SpotifyUrl,
+                IsSelected = track.IsSelected,
+                IsComplete = track.Status == "Done" || track.Progress >= 100,
+                OutputPath = track.OutputPath,
+            }).ToList(),
+        };
+        try
+        {
+            _jobStore.Save(_savedJob);
+            ResumeButton.Visibility = Visibility.Visible;
+        }
+        catch (IOException)
+        {
+            // Downloads remain usable if local job persistence is unavailable.
         }
     }
 }

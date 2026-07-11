@@ -9,6 +9,7 @@ public sealed class TrackItem : INotifyPropertyChanged
     private int _progress;
     private string _status = "Ready";
     private bool _isSelected = true;
+    private string? _outputPath;
 
     [JsonPropertyName("id")]
     public string Id { get; init; } = string.Empty;
@@ -54,6 +55,13 @@ public sealed class TrackItem : INotifyPropertyChanged
     {
         get => _isSelected;
         set => SetField(ref _isSelected, value);
+    }
+
+    [JsonIgnore]
+    public string? OutputPath
+    {
+        get => _outputPath;
+        set => SetField(ref _outputPath, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

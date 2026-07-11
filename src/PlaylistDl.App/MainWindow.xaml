@@ -17,7 +17,11 @@
           <TextBlock Text="Playlist DL" FontSize="26" FontWeight="SemiBold" Foreground="White" />
           <TextBlock Text="Personal playlist, album, and track matching and audio download" Foreground="#AEB6C5" Margin="0,3,0,0" />
         </StackPanel>
-        <Button DockPanel.Dock="Right" Content="Settings" Width="100" Click="SettingsButton_Click" />
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+          <Button x:Name="ResumeButton" Content="Resume last job" Visibility="Collapsed"
+                  Margin="0,0,10,0" Click="ResumeButton_Click" />
+          <Button Content="Settings" Width="100" Click="SettingsButton_Click" />
+        </StackPanel>
       </DockPanel>
     </Border>
 
