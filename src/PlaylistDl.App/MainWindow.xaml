@@ -91,6 +91,14 @@
           <DataGridTextColumn Header="Artist" Binding="{Binding ArtistText}" Width="1.5*" />
           <DataGridTextColumn Header="Album" Binding="{Binding Album}" Width="1.5*" />
           <DataGridTextColumn Header="Length" Binding="{Binding DurationText}" Width="70" />
+          <DataGridTemplateColumn Header="Source" Width="84">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <Button Content="{Binding SourceLabel}" Padding="6,2" Click="SourceButton_Click"
+                        ToolTip="Choose an exact YouTube source for this track" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
           <DataGridTemplateColumn Header="Progress" Width="160">
             <DataGridTemplateColumn.CellTemplate>
               <DataTemplate>

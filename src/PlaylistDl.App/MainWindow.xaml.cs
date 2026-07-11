@@ -178,6 +178,9 @@ public partial class MainWindow : Window
                 cookie_file = _settings.CookieFile,
                 track_ids = jobTracks.Select(track => track.Id).ToList(),
                 write_m3u = _settings.WriteM3u,
+                source_overrides = jobTracks
+                    .Where(track => !string.IsNullOrWhiteSpace(track.SourceOverride))
+                    .ToDictionary(track => track.Id, track => track.SourceOverride),
             });
         SaveCurrentJob();
     }
@@ -384,6 +387,7 @@ public partial class MainWindow : Window
                 track.Progress = saved.IsComplete ? 100 : 0;
                 track.Status = saved.IsComplete ? "Done" : "Ready";
                 track.OutputPath = saved.OutputPath;
+                track.SourceOverride = saved.SourceOverride;
             }
             track.PropertyChanged += Track_PropertyChanged;
             Tracks.Add(track);
@@ -451,6 +455,7 @@ public partial class MainWindow : Window
                 IsSelected = track.IsSelected,
                 IsComplete = track.Status == "Done" || track.Progress >= 100,
                 OutputPath = track.OutputPath,
+                SourceOverride = track.SourceOverride,
             }).ToList(),
         };
         try
@@ -461,6 +466,24 @@ public partial class MainWindow : Window
         catch (IOException)
         {
             // Downloads remain usable if local job persistence is unavailable.
+        }
+    }
+
+    private void SourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: TrackItem track })
+        {
+            return;
+        }
+
+        var dialog = new SourceOverrideWindow(track) { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            track.SourceOverride = dialog.SourceUrl;
+            StatusText.Text = dialog.SourceUrl is null
+                ? $"{track.Title} will use automatic matching"
+                : $"Manual source saved for {track.Title}";
+            SaveCurrentJob();
         }
     }
 }

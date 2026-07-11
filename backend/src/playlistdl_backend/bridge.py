@@ -84,6 +84,7 @@ class Bridge:
                     "track_ids": request.get("track_ids"),
                     "audio_format": str(request.get("format", "mp3")),
                     "write_m3u": bool(request.get("write_m3u", False)),
+                    "source_overrides": request.get("source_overrides"),
                 },
                 daemon=True,
             )

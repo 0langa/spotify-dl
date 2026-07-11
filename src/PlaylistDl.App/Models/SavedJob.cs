@@ -24,4 +24,6 @@ public sealed class SavedTrack
     public bool IsComplete { get; set; }
 
     public string? OutputPath { get; set; }
+
+    public string? SourceOverride { get; set; }
 }

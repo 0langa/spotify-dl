@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 
 from playlistdl_backend import engine as engine_module
-from playlistdl_backend.engine import Engine, classify_spotify_url, effective_bitrate
+from playlistdl_backend.engine import (
+    Engine,
+    classify_spotify_url,
+    effective_bitrate,
+    validate_source_url,
+)
 
 
 @pytest.mark.parametrize(
@@ -137,6 +142,27 @@ def test_effective_bitrate_policy(
     audio_format: str, bitrate: str | None, expected: str | None
 ) -> None:
     assert effective_bitrate(audio_format, bitrate) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtu.be/video-id",
+        "https://www.youtube.com/watch?v=video-id",
+        "https://music.youtube.com/watch?v=video-id",
+    ],
+)
+def test_validate_source_url_accepts_youtube_hosts(url: str) -> None:
+    assert validate_source_url(url) == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://youtube.com/watch?v=x", "https://example.com/video", "not-a-url"],
+)
+def test_validate_source_url_rejects_unsafe_or_unrelated_urls(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS YouTube"):
+        validate_source_url(url)
 
 
 def test_download_rejects_unsupported_format(engine: Engine) -> None:

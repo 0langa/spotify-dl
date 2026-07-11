@@ -28,6 +28,18 @@ _SOURCE_TYPES = ("playlist", "album", "track")
 SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "wav", "ogg")
 
 
+def validate_source_url(url: str) -> str:
+    """Validate and normalize a user-selected YouTube source URL."""
+    value = url.strip()
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (
+        host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+    ):
+        raise ValueError("Manual sources must be HTTPS YouTube or YouTube Music URLs")
+    return value
+
+
 def effective_bitrate(audio_format: str, bitrate: str | None) -> str | None:
     """Map the UI bitrate choice onto spotDL's bitrate option per format."""
     if audio_format == "mp3":
@@ -162,6 +174,7 @@ class Engine:
         track_ids: list[str] | None = None,
         audio_format: str = "mp3",
         write_m3u: bool = False,
+        source_overrides: dict[str, str] | None = None,
     ) -> None:
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
@@ -176,6 +189,15 @@ class Engine:
             songs = [song for song in songs if (song.song_id or song.url) in selected]
             if not songs:
                 raise ValueError("No requested tracks exist in this playlist")
+        if source_overrides:
+            known_ids = {song.song_id or song.url for song in songs}
+            unknown_ids = set(source_overrides) - known_ids
+            if unknown_ids:
+                raise ValueError("A manual source refers to a track outside this job")
+            for song in songs:
+                track_id = song.song_id or song.url
+                if track_id in source_overrides:
+                    song.download_url = validate_source_url(source_overrides[track_id])
 
         output = Path(output_dir).expanduser().resolve()
         output.mkdir(parents=True, exist_ok=True)

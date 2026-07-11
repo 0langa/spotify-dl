@@ -31,4 +31,15 @@ public sealed class TrackItemTests
         Assert.False(track.IsSelected);
         Assert.Equal(nameof(TrackItem.IsSelected), changedProperty);
     }
+
+    [Fact]
+    public void ManualSourceChangesItsDisplayLabel()
+    {
+        var track = new TrackItem();
+        Assert.Equal("Auto", track.SourceLabel);
+
+        track.SourceOverride = "https://youtu.be/example";
+
+        Assert.Equal("Manual", track.SourceLabel);
+    }
 }

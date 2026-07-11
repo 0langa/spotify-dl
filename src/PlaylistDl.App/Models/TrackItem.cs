@@ -10,6 +10,7 @@ public sealed class TrackItem : INotifyPropertyChanged
     private string _status = "Ready";
     private bool _isSelected = true;
     private string? _outputPath;
+    private string? _sourceOverride;
 
     [JsonPropertyName("id")]
     public string Id { get; init; } = string.Empty;
@@ -64,16 +65,33 @@ public sealed class TrackItem : INotifyPropertyChanged
         set => SetField(ref _outputPath, value);
     }
 
+    [JsonIgnore]
+    public string? SourceOverride
+    {
+        get => _sourceOverride;
+        set
+        {
+            if (SetField(ref _sourceOverride, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SourceLabel)));
+            }
+        }
+    }
+
+    [JsonIgnore]
+    public string SourceLabel => string.IsNullOrWhiteSpace(SourceOverride) ? "Auto" : "Manual";
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
         {
-            return;
+            return false;
         }
 
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        return true;
     }
 }
