@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,6 +18,7 @@ public partial class MainWindow : Window
     private readonly BackendClient _backend = new();
     private readonly SettingsService _settingsService = new();
     private readonly JobStore _jobStore = new();
+    private readonly UpdateService _updateService = new();
     private readonly AppSettings _settings;
     private readonly ICollectionView _tracksView;
     private PlaylistInfo? _playlist;
@@ -24,6 +27,7 @@ public partial class MainWindow : Window
     private HashSet<string> _activeTrackIds = [];
     private readonly List<TrackItem> _failedTracks = [];
     private SavedJob? _savedJob;
+    private UpdateResult? _availableUpdate;
 
     public ObservableCollection<TrackItem> Tracks { get; } = [];
 
@@ -537,6 +541,47 @@ public partial class MainWindow : Window
                 ? $"{track.Title} will use automatic matching"
                 : $"Manual source saved for {track.Title}";
             SaveCurrentJob();
+        }
+    }
+
+    private async void UpdateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_availableUpdate is not null)
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _availableUpdate.ReleasePage.AbsoluteUri,
+                UseShellExecute = true,
+            });
+            return;
+        }
+
+        UpdateButton.IsEnabled = false;
+        UpdateButton.Content = "Checking…";
+        try
+        {
+            var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+            _availableUpdate = await _updateService.CheckAsync(current);
+            if (_availableUpdate is null)
+            {
+                UpdateButton.Content = "Up to date";
+                StatusText.Text = $"Playlist DL {current.Major}.{current.Minor}.{current.Build} is up to date";
+            }
+            else
+            {
+                UpdateButton.Content = $"Get {_availableUpdate.Tag}";
+                UpdateButton.ToolTip = "Open the latest verified GitHub release";
+                StatusText.Text = $"Playlist DL {_availableUpdate.Tag} is available";
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or FormatException or InvalidDataException)
+        {
+            UpdateButton.Content = "Check for updates";
+            StatusText.Text = "Update check unavailable — try again later";
+        }
+        finally
+        {
+            UpdateButton.IsEnabled = true;
         }
     }
 }
