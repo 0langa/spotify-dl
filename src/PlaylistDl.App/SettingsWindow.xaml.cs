@@ -17,6 +17,7 @@ public partial class SettingsWindow : Window
         SelectByTag(BitrateBox, settings.Bitrate);
         SelectByTag(ThreadsBox, settings.Threads.ToString());
         CookieFileBox.Text = settings.CookieFile ?? string.Empty;
+        WriteM3uBox.IsChecked = settings.WriteM3u;
         UpdateBitrateAvailability();
     }
 
@@ -67,6 +68,7 @@ public partial class SettingsWindow : Window
         _settings.Bitrate = ((ComboBoxItem)BitrateBox.SelectedItem).Tag?.ToString() ?? "0";
         _settings.Threads = int.Parse(((ComboBoxItem)ThreadsBox.SelectedItem).Tag?.ToString() ?? "2");
         _settings.CookieFile = string.IsNullOrWhiteSpace(CookieFileBox.Text) ? null : CookieFileBox.Text;
+        _settings.WriteM3u = WriteM3uBox.IsChecked == true;
         DialogResult = true;
     }
 }

@@ -80,6 +80,7 @@ class Bridge:
                     "cookie_file": request.get("cookie_file"),
                     "track_ids": request.get("track_ids"),
                     "audio_format": str(request.get("format", "mp3")),
+                    "write_m3u": bool(request.get("write_m3u", False)),
                 },
                 daemon=True,
             )

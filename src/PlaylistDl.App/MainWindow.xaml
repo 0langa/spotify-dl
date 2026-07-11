@@ -42,10 +42,12 @@
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
           </Grid.ColumnDefinitions>
           <TextBlock Text="Output" Foreground="#AEB6C5" VerticalAlignment="Center" Margin="0,0,10,0" />
           <TextBox x:Name="OutputDirectoryBox" Grid.Column="1" Text="" IsReadOnly="True" />
           <Button Grid.Column="2" Content="Choose folder" Margin="10,0,0,0" Click="ChooseFolderButton_Click" />
+          <Button Grid.Column="3" Content="Open folder" Margin="10,0,0,0" Click="OpenFolderButton_Click" />
         </Grid>
       </Grid>
     </Border>

@@ -17,6 +17,7 @@ from spotdl.types.song import Song
 from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.models import PlaylistDto, TrackDto
+from playlistdl_backend.playlist_file import write_m3u8
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class Engine:
         self._emit = emit
         self._spotify_initialized = False
         self._songs: dict[str, list[Song]] = {}
+        self._names: dict[str, str] = {}
         self._cancel = threading.Event()
 
     def _ensure_spotify(self) -> None:
@@ -79,6 +81,7 @@ class Engine:
         name, description, owner, cover_url, songs = self._fetch_source(source_type, url)
         playlist_id = uuid.uuid4().hex
         self._songs[playlist_id] = songs
+        self._names[playlist_id] = name
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
         return PlaylistDto(
             id=playlist_id,
@@ -148,6 +151,7 @@ class Engine:
         cookie_file: str | None = None,
         track_ids: list[str] | None = None,
         audio_format: str = "mp3",
+        write_m3u: bool = False,
     ) -> None:
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
@@ -205,7 +209,41 @@ class Engine:
                     }
                 )
         downloader.progress_handler.close()
-        self._emit({"type": "job_completed", "results": results})
+        m3u_path = (
+            self._write_playlist_file(playlist_id, output, songs, results) if write_m3u else None
+        )
+        self._emit(
+            {
+                "type": "job_completed",
+                "results": results,
+                "m3u_path": str(m3u_path) if m3u_path else None,
+            }
+        )
+
+    def _write_playlist_file(
+        self,
+        playlist_id: str,
+        output: Path,
+        songs: list[Song],
+        results: list[dict[str, Any]],
+    ) -> Path | None:
+        path_by_id = {
+            result["track_id"]: result["path"]
+            for result in results
+            if result["success"] and result["path"]
+        }
+        ordered = [
+            path_by_id[track_id]
+            for song in songs
+            if (track_id := song.song_id or song.url) in path_by_id
+        ]
+        if not ordered:
+            return None
+        try:
+            return write_m3u8(output, self._names.get(playlist_id) or "playlist", ordered)
+        except OSError:
+            logger.exception("Failed to write m3u8 playlist file")
+            return None
 
     def _on_progress(self, tracker: SongTracker, message: str) -> None:
         self._emit(

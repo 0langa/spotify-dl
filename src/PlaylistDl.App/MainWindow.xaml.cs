@@ -179,6 +179,7 @@ public partial class MainWindow : Window
                 threads = _settings.Threads,
                 cookie_file = _settings.CookieFile,
                 track_ids = jobTracks.Select(track => track.Id).ToList(),
+                write_m3u = _settings.WriteM3u,
             });
     }
 
@@ -202,6 +203,22 @@ public partial class MainWindow : Window
             _settings.OutputDirectory = dialog.FolderName;
             _settingsService.Save(_settings);
         }
+    }
+
+    private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        var directory = OutputDirectoryBox.Text;
+        if (!Directory.Exists(directory))
+        {
+            StatusText.Text = "Output folder does not exist yet";
+            return;
+        }
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = directory,
+            UseShellExecute = true,
+        });
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -239,7 +256,10 @@ public partial class MainWindow : Window
                 UpdateSelectionUi();
                 if (type == "job_completed")
                 {
-                    ApplyJobResults(JobResults.Parse(message));
+                    var m3uPath = message.TryGetProperty("m3u_path", out var m3u) && m3u.ValueKind == JsonValueKind.String
+                        ? m3u.GetString()
+                        : null;
+                    ApplyJobResults(JobResults.Parse(message), m3uPath);
                 }
                 else
                 {
@@ -257,7 +277,7 @@ public partial class MainWindow : Window
         });
     }
 
-    private void ApplyJobResults(IReadOnlyList<DownloadResult> results)
+    private void ApplyJobResults(IReadOnlyList<DownloadResult> results, string? m3uPath = null)
     {
         _failedTracks.Clear();
         foreach (var result in results)
@@ -284,9 +304,15 @@ public partial class MainWindow : Window
         RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
         RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
         var succeeded = results.Count(result => result.Success);
-        StatusText.Text = _failedTracks.Count == 0
+        var summary = _failedTracks.Count == 0
             ? $"Downloads complete — {succeeded} done"
             : $"Downloads finished — {succeeded} done, {_failedTracks.Count} failed";
+        if (m3uPath is not null)
+        {
+            summary += $" · playlist saved as {Path.GetFileName(m3uPath)}";
+        }
+
+        StatusText.Text = summary;
     }
 
     private TrackItem? FindTrack(string trackId) =>

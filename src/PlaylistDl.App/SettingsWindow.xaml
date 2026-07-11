@@ -64,6 +64,12 @@
                  Foreground="#AEB6C5" Margin="0,6,0,0" />
     </StackPanel>
 
+    <StackPanel Grid.Row="5" Margin="0,20,0,0" VerticalAlignment="Top">
+      <CheckBox x:Name="WriteM3uBox" Content="Create .m3u8 playlist file after download" Foreground="White" />
+      <TextBlock Text="Writes an ordered playlist file next to the downloaded tracks so players keep the original order."
+                 Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+    </StackPanel>
+
     <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
       <Button Content="Cancel" Width="90" Margin="0,0,8,0" IsCancel="True" />
       <Button Content="Save" Width="90" Background="#4F7DFF" Foreground="White" IsDefault="True" Click="SaveButton_Click" />

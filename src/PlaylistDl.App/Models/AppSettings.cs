@@ -15,4 +15,6 @@ public sealed class AppSettings
     public int Threads { get; set; } = 2;
 
     public string? CookieFile { get; set; }
+
+    public bool WriteM3u { get; set; } = true;
 }
