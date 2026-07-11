@@ -1,7 +1,7 @@
 <Window x:Class="PlaylistDl.App.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Playlist DL settings" Height="620" Width="600"
+        Title="Playlist DL settings" Height="745" Width="600"
         ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
         Background="#111318" Foreground="White">
   <Grid Margin="28">
@@ -12,6 +12,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
     <TextBlock Text="Download settings" FontSize="24" FontWeight="SemiBold" />
@@ -64,13 +65,24 @@
                  Foreground="#AEB6C5" Margin="0,6,0,0" />
     </StackPanel>
 
-    <StackPanel Grid.Row="5" Margin="0,20,0,0" VerticalAlignment="Top">
+    <StackPanel Grid.Row="5" Margin="0,20,0,0">
+      <TextBlock Text="File organization" FontWeight="SemiBold" />
+      <ComboBox x:Name="NamingPresetBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
+        <ComboBoxItem Tag="position_artist_title">01 - Artist - Title</ComboBoxItem>
+        <ComboBoxItem Tag="artist_title">Artist - Title</ComboBoxItem>
+        <ComboBoxItem Tag="album_track_title">Album Artist / Album / 01 - Title</ComboBoxItem>
+      </ComboBox>
+      <CheckBox x:Name="CreateSourceFolderBox" Content="Create a folder named after the playlist, album, or import"
+                Foreground="White" Margin="0,10,0,0" />
+    </StackPanel>
+
+    <StackPanel Grid.Row="6" Margin="0,20,0,0" VerticalAlignment="Top">
       <CheckBox x:Name="WriteM3uBox" Content="Create .m3u8 playlist file after download" Foreground="White" />
       <TextBlock Text="Writes an ordered playlist file next to the downloaded tracks so players keep the original order."
                  Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
     </StackPanel>
 
-    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+    <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
       <Button Content="Cancel" Width="90" Margin="0,0,8,0" IsCancel="True" />
       <Button Content="Save" Width="90" Background="#4F7DFF" Foreground="White" IsDefault="True" Click="SaveButton_Click" />
     </StackPanel>

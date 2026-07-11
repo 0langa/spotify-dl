@@ -8,6 +8,7 @@ import pytest
 from playlistdl_backend import engine as engine_module
 from playlistdl_backend.engine import (
     Engine,
+    build_output_paths,
     classify_spotify_url,
     effective_bitrate,
     validate_source_url,
@@ -170,3 +171,24 @@ def test_download_rejects_unsupported_format(engine: Engine) -> None:
 
     with pytest.raises(ValueError, match="Unsupported audio format"):
         engine.download("known", "out", audio_format="wma")
+
+
+def test_build_output_paths_creates_sanitized_collection_folder(tmp_path) -> None:
+    root, template = build_output_paths(
+        str(tmp_path), 'Road/Trip: "Mix"', "album_track_title", True
+    )
+
+    assert root == tmp_path / "Road_Trip_ _Mix_"
+    assert template == str(root / "{album-artist}/{album}/{track-number} - {title}.{output-ext}")
+
+
+def test_build_output_paths_can_write_directly_to_selected_folder(tmp_path) -> None:
+    root, template = build_output_paths(str(tmp_path), "Ignored", "artist_title", False)
+
+    assert root == tmp_path
+    assert template == str(root / "{artist} - {title}.{output-ext}")
+
+
+def test_build_output_paths_rejects_unknown_preset(tmp_path) -> None:
+    with pytest.raises(ValueError, match="Unknown file naming preset"):
+        build_output_paths(str(tmp_path), "Mix", "custom", True)

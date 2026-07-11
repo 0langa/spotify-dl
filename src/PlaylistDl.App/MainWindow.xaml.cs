@@ -182,6 +182,8 @@ public partial class MainWindow : Window
                 source_overrides = jobTracks
                     .Where(track => !string.IsNullOrWhiteSpace(track.SourceOverride))
                     .ToDictionary(track => track.Id, track => track.SourceOverride),
+                naming_preset = _settings.NamingPreset,
+                create_source_folder = _settings.CreateSourceFolder,
             });
         SaveCurrentJob();
     }

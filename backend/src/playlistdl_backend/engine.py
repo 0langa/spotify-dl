@@ -18,7 +18,7 @@ from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.manifest import load_manifest
 from playlistdl_backend.models import PlaylistDto, TrackDto
-from playlistdl_backend.playlist_file import write_m3u8
+from playlistdl_backend.playlist_file import sanitize_filename, write_m3u8
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,12 @@ EventSink = Callable[[dict[str, Any]], None]
 _SOURCE_TYPES = ("playlist", "album", "track")
 
 SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "wav", "ogg")
+
+NAMING_PRESETS = {
+    "position_artist_title": "{list-position} - {artist} - {title}.{output-ext}",
+    "artist_title": "{artist} - {title}.{output-ext}",
+    "album_track_title": "{album-artist}/{album}/{track-number} - {title}.{output-ext}",
+}
 
 
 def validate_source_url(url: str) -> str:
@@ -50,6 +56,21 @@ def effective_bitrate(audio_format: str, bitrate: str | None) -> str | None:
         return "disable"
     # Lossless targets (flac/wav) and ogg re-encode with converter defaults.
     return None
+
+
+def build_output_paths(
+    output_dir: str,
+    collection_name: str,
+    naming_preset: str,
+    create_source_folder: bool,
+) -> tuple[Path, str]:
+    """Return the collection root and spotDL output template."""
+    if naming_preset not in NAMING_PRESETS:
+        raise ValueError("Unknown file naming preset")
+    root = Path(output_dir).expanduser().resolve()
+    if create_source_folder:
+        root /= sanitize_filename(collection_name)
+    return root, str(root / NAMING_PRESETS[naming_preset])
 
 
 def classify_spotify_url(url: str) -> str:
@@ -193,6 +214,8 @@ class Engine:
         audio_format: str = "mp3",
         write_m3u: bool = False,
         source_overrides: dict[str, str] | None = None,
+        naming_preset: str = "position_artist_title",
+        create_source_folder: bool = True,
     ) -> None:
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
@@ -217,7 +240,12 @@ class Engine:
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
 
-        output = Path(output_dir).expanduser().resolve()
+        output, output_template = build_output_paths(
+            output_dir,
+            self._names.get(playlist_id) or "playlist",
+            naming_preset,
+            create_source_folder,
+        )
         output.mkdir(parents=True, exist_ok=True)
         self._cancel.clear()
 
@@ -227,7 +255,7 @@ class Engine:
             "format": audio_format,
             "bitrate": effective_bitrate(audio_format, bitrate),
             "threads": max(1, min(threads, 4)),
-            "output": str(output / "{list-position} - {artist} - {title}.{output-ext}"),
+            "output": output_template,
             "overwrite": "skip",
             "scan_for_songs": True,
             "restrict": "none",

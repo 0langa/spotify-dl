@@ -95,6 +95,8 @@ class Bridge:
                     "audio_format": str(request.get("format", "mp3")),
                     "write_m3u": bool(request.get("write_m3u", False)),
                     "source_overrides": request.get("source_overrides"),
+                    "naming_preset": str(request.get("naming_preset", "position_artist_title")),
+                    "create_source_folder": bool(request.get("create_source_folder", True)),
                 },
                 daemon=True,
             )

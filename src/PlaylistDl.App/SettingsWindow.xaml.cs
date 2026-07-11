@@ -18,6 +18,8 @@ public partial class SettingsWindow : Window
         SelectByTag(ThreadsBox, settings.Threads.ToString());
         CookieFileBox.Text = settings.CookieFile ?? string.Empty;
         WriteM3uBox.IsChecked = settings.WriteM3u;
+        SelectByTag(NamingPresetBox, settings.NamingPreset);
+        CreateSourceFolderBox.IsChecked = settings.CreateSourceFolder;
         UpdateBitrateAvailability();
     }
 
@@ -69,6 +71,9 @@ public partial class SettingsWindow : Window
         _settings.Threads = int.Parse(((ComboBoxItem)ThreadsBox.SelectedItem).Tag?.ToString() ?? "2");
         _settings.CookieFile = string.IsNullOrWhiteSpace(CookieFileBox.Text) ? null : CookieFileBox.Text;
         _settings.WriteM3u = WriteM3uBox.IsChecked == true;
+        _settings.NamingPreset = ((ComboBoxItem)NamingPresetBox.SelectedItem).Tag?.ToString()
+            ?? "position_artist_title";
+        _settings.CreateSourceFolder = CreateSourceFolderBox.IsChecked == true;
         DialogResult = true;
     }
 }
