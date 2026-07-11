@@ -142,6 +142,16 @@ class Engine:
     def cancel(self) -> None:
         self._cancel.set()
 
+    def ensure_startable(self, playlist_id: str, audio_format: str) -> None:
+        """Validate a start request synchronously so errors precede job_started."""
+        if audio_format not in SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Unsupported audio format: {audio_format}. "
+                f"Supported formats: {', '.join(SUPPORTED_FORMATS)}"
+            )
+        if playlist_id not in self._songs:
+            raise ValueError("Unknown or expired playlist id")
+
     def download(
         self,
         playlist_id: str,

@@ -69,6 +69,9 @@ class Bridge:
         if command == "start":
             if self._worker is not None and self._worker.is_alive():
                 raise RuntimeError("A download job is already running")
+            self._engine.ensure_startable(
+                str(request["playlist_id"]), str(request.get("format", "mp3"))
+            )
             self._worker = threading.Thread(
                 target=self._download_worker,
                 kwargs={
