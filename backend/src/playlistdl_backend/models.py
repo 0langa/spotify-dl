@@ -28,6 +28,7 @@ class PlaylistDto:
     owner: str
     cover_url: str
     source_url: str
+    source_type: str
     tracks: list[TrackDto]
 
     def to_dict(self) -> dict[str, Any]:

@@ -19,6 +19,9 @@ public sealed class PlaylistInfo
     [JsonPropertyName("source_url")]
     public string SourceUrl { get; init; } = string.Empty;
 
+    [JsonPropertyName("source_type")]
+    public string SourceType { get; init; } = "playlist";
+
     [JsonPropertyName("tracks")]
     public List<TrackItem> Tracks { get; init; } = [];
 }

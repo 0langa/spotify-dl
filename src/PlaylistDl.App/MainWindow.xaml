@@ -15,7 +15,7 @@
       <DockPanel LastChildFill="False">
         <StackPanel DockPanel.Dock="Left">
           <TextBlock Text="Playlist DL" FontSize="26" FontWeight="SemiBold" Foreground="White" />
-          <TextBlock Text="Personal playlist matching and MP3 download" Foreground="#AEB6C5" Margin="0,3,0,0" />
+          <TextBlock Text="Personal playlist, album, and track matching and audio download" Foreground="#AEB6C5" Margin="0,3,0,0" />
         </StackPanel>
         <Button DockPanel.Dock="Right" Content="Settings" Width="100" Click="SettingsButton_Click" />
       </DockPanel>
@@ -33,9 +33,9 @@
         </Grid.ColumnDefinitions>
         <TextBox x:Name="PlaylistUrlBox" Grid.Row="0" Grid.Column="0" Margin="0,0,10,0"
                  VerticalContentAlignment="Center"
-                 ToolTip="Paste a public Spotify playlist URL"
+                 ToolTip="Paste a public Spotify playlist, album, or track URL"
                  Text="" />
-        <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="1" Content="Analyze playlist"
+        <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="1" Content="Analyze link"
                 Click="AnalyzeButton_Click" Background="#4F7DFF" Foreground="White" />
         <Grid Grid.Row="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
           <Grid.ColumnDefinitions>
@@ -56,7 +56,7 @@
         <RowDefinition Height="*" />
       </Grid.RowDefinitions>
       <DockPanel Margin="2,0,2,10">
-        <TextBlock x:Name="PlaylistTitle" Text="Paste a playlist link to begin" FontSize="19" FontWeight="SemiBold" Foreground="White" />
+        <TextBlock x:Name="PlaylistTitle" Text="Paste a Spotify link to begin" FontSize="19" FontWeight="SemiBold" Foreground="White" />
         <TextBlock x:Name="PlaylistSummary" DockPanel.Dock="Right" Foreground="#AEB6C5" VerticalAlignment="Center" />
       </DockPanel>
       <DataGrid Grid.Row="1" x:Name="TrackGrid" ItemsSource="{Binding Tracks}" AutoGenerateColumns="False"

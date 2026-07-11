@@ -35,7 +35,7 @@ public partial class MainWindow : Window
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
             !uri.Host.EndsWith("spotify.com", StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show(this, "Paste a valid Spotify playlist URL.", "Invalid playlist", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "Paste a valid Spotify playlist, album, or track URL.", "Invalid link", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -51,9 +51,15 @@ public partial class MainWindow : Window
             }
 
             PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
-            PlaylistSummary.Text = $"{Tracks.Count} tracks · {_playlist?.Owner}";
+            var sourceLabel = _playlist?.SourceType switch
+            {
+                "album" => "album",
+                "track" => "track",
+                _ => "playlist",
+            };
+            PlaylistSummary.Text = $"{sourceLabel} · {Tracks.Count} tracks · {_playlist?.Owner}";
             DownloadButton.IsEnabled = Tracks.Count > 0;
-            StatusText.Text = "Playlist ready";
+            StatusText.Text = $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready";
         }
         catch (Exception ex)
         {

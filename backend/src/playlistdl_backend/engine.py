@@ -7,9 +7,11 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from spotdl.download.downloader import Downloader
 from spotdl.download.progress_handler import ProgressHandler, SongTracker
+from spotdl.types.album import Album
 from spotdl.types.playlist import Playlist
 from spotdl.types.song import Song
 from spotdl.utils.spotify import SpotifyClient
@@ -19,6 +21,25 @@ from playlistdl_backend.models import PlaylistDto, TrackDto
 logger = logging.getLogger(__name__)
 
 EventSink = Callable[[dict[str, Any]], None]
+
+_SOURCE_TYPES = ("playlist", "album", "track")
+
+
+def classify_spotify_url(url: str) -> str:
+    """Return source type for an open.spotify.com URL, or raise ValueError."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Paste a valid Spotify playlist, album, or track URL")
+    host = parsed.hostname.lower()
+    if host != "spotify.com" and not host.endswith(".spotify.com"):
+        raise ValueError("Paste a valid Spotify playlist, album, or track URL")
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    # Locale-prefixed links look like /intl-de/track/<id>.
+    if segments and segments[0].startswith("intl-"):
+        segments = segments[1:]
+    if len(segments) >= 2 and segments[0] in _SOURCE_TYPES and segments[1]:
+        return segments[0]
+    raise ValueError("Unsupported Spotify link. Use a playlist, album, or track URL")
 
 
 class Engine:
@@ -40,19 +61,52 @@ class Engine:
         self._spotify_initialized = True
 
     def resolve(self, url: str) -> PlaylistDto:
+        source_type = classify_spotify_url(url)
         self._ensure_spotify()
-        metadata, songs = Playlist.get_metadata(url)
+        name, description, owner, cover_url, songs = self._fetch_source(source_type, url)
         playlist_id = uuid.uuid4().hex
         self._songs[playlist_id] = songs
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
         return PlaylistDto(
             id=playlist_id,
-            name=str(metadata.get("name") or "Spotify playlist"),
-            description=str(metadata.get("description") or ""),
-            owner=str(metadata.get("author_name") or ""),
-            cover_url=str(metadata.get("cover_url") or ""),
+            name=name,
+            description=description,
+            owner=owner,
+            cover_url=cover_url,
             source_url=url,
+            source_type=source_type,
             tracks=tracks,
+        )
+
+    @staticmethod
+    def _fetch_source(source_type: str, url: str) -> tuple[str, str, str, str, list[Song]]:
+        if source_type == "playlist":
+            metadata, songs = Playlist.get_metadata(url)
+            return (
+                str(metadata.get("name") or "Spotify playlist"),
+                str(metadata.get("description") or ""),
+                str(metadata.get("author_name") or ""),
+                str(metadata.get("cover_url") or ""),
+                songs,
+            )
+        if source_type == "album":
+            metadata, songs = Album.get_metadata(url)
+            artist = metadata.get("artist") or {}
+            cover_url = next((song.cover_url for song in songs if song.cover_url), "")
+            return (
+                str(metadata.get("name") or "Spotify album"),
+                "",
+                str(artist.get("name") or ""),
+                str(cover_url or ""),
+                songs,
+            )
+        song = Song.from_url(url)
+        return (
+            song.name,
+            "",
+            song.artist or (song.artists[0] if song.artists else ""),
+            str(song.cover_url or ""),
+            [song],
         )
 
     @staticmethod
