@@ -13,16 +13,36 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         _settings = settings;
+        SelectByTag(FormatBox, settings.Format);
         SelectByTag(BitrateBox, settings.Bitrate);
         SelectByTag(ThreadsBox, settings.Threads.ToString());
         CookieFileBox.Text = settings.CookieFile ?? string.Empty;
+        UpdateBitrateAvailability();
+    }
+
+    private string SelectedFormat() =>
+        (FormatBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "mp3";
+
+    private void FormatBox_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        UpdateBitrateAvailability();
+
+    private void UpdateBitrateAvailability()
+    {
+        if (BitrateBox is not null)
+        {
+            BitrateBox.IsEnabled = SelectedFormat() == "mp3";
+        }
     }
 
     private static void SelectByTag(ComboBox comboBox, string tag)
     {
-        comboBox.SelectedItem = comboBox.Items
+        var match = comboBox.Items
             .OfType<ComboBoxItem>()
             .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), tag, StringComparison.Ordinal));
+        if (match is not null)
+        {
+            comboBox.SelectedItem = match;
+        }
     }
 
     private void ChooseCookieButton_Click(object sender, RoutedEventArgs e)
@@ -43,6 +63,7 @@ public partial class SettingsWindow : Window
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        _settings.Format = SelectedFormat();
         _settings.Bitrate = ((ComboBoxItem)BitrateBox.SelectedItem).Tag?.ToString() ?? "0";
         _settings.Threads = int.Parse(((ComboBoxItem)ThreadsBox.SelectedItem).Tag?.ToString() ?? "2");
         _settings.CookieFile = string.IsNullOrWhiteSpace(CookieFileBox.Text) ? null : CookieFileBox.Text;

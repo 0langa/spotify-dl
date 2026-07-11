@@ -24,6 +24,19 @@ EventSink = Callable[[dict[str, Any]], None]
 
 _SOURCE_TYPES = ("playlist", "album", "track")
 
+SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "wav", "ogg")
+
+
+def effective_bitrate(audio_format: str, bitrate: str | None) -> str | None:
+    """Map the UI bitrate choice onto spotDL's bitrate option per format."""
+    if audio_format == "mp3":
+        return bitrate or "0"
+    if audio_format in ("m4a", "opus"):
+        # Source audio is already AAC/Opus; copy the stream instead of re-encoding.
+        return "disable"
+    # Lossless targets (flac/wav) and ogg re-encode with converter defaults.
+    return None
+
 
 def classify_spotify_url(url: str) -> str:
     """Return source type for an open.spotify.com URL, or raise ValueError."""
@@ -134,7 +147,13 @@ class Engine:
         threads: int = 2,
         cookie_file: str | None = None,
         track_ids: list[str] | None = None,
+        audio_format: str = "mp3",
     ) -> None:
+        if audio_format not in SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Unsupported audio format: {audio_format}. "
+                f"Supported formats: {', '.join(SUPPORTED_FORMATS)}"
+            )
         songs = self._songs.get(playlist_id)
         if songs is None:
             raise ValueError("Unknown or expired playlist id")
@@ -151,8 +170,8 @@ class Engine:
         settings: dict[str, Any] = {
             "audio_providers": ["youtube-music", "youtube"],
             "lyrics_providers": [],
-            "format": "mp3",
-            "bitrate": bitrate,
+            "format": audio_format,
+            "bitrate": effective_bitrate(audio_format, bitrate),
             "threads": max(1, min(threads, 4)),
             "output": str(output / "{list-position} - {artist} - {title}.{output-ext}"),
             "overwrite": "skip",

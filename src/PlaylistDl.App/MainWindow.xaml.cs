@@ -174,6 +174,7 @@ public partial class MainWindow : Window
             {
                 playlist_id = _playlist.Id,
                 output_dir = OutputDirectoryBox.Text,
+                format = _settings.Format,
                 bitrate = _settings.Bitrate,
                 threads = _settings.Threads,
                 cookie_file = _settings.CookieFile,

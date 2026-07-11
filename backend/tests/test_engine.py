@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from playlistdl_backend import engine as engine_module
-from playlistdl_backend.engine import Engine, classify_spotify_url
+from playlistdl_backend.engine import Engine, classify_spotify_url, effective_bitrate
 
 
 @pytest.mark.parametrize(
@@ -118,3 +118,29 @@ def test_resolve_track_uses_single_song(engine: Engine, monkeypatch: pytest.Monk
 def test_resolve_rejects_unsupported_url(engine: Engine) -> None:
     with pytest.raises(ValueError):
         engine.resolve("https://open.spotify.com/artist/xyz")
+
+
+@pytest.mark.parametrize(
+    ("audio_format", "bitrate", "expected"),
+    [
+        ("mp3", "0", "0"),
+        ("mp3", "320k", "320k"),
+        ("mp3", None, "0"),
+        ("m4a", "320k", "disable"),
+        ("opus", "0", "disable"),
+        ("flac", "320k", None),
+        ("wav", "0", None),
+        ("ogg", "0", None),
+    ],
+)
+def test_effective_bitrate_policy(
+    audio_format: str, bitrate: str | None, expected: str | None
+) -> None:
+    assert effective_bitrate(audio_format, bitrate) == expected
+
+
+def test_download_rejects_unsupported_format(engine: Engine) -> None:
+    engine._songs["known"] = [_fake_song("One", 1)]  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="Unsupported audio format"):
+        engine.download("known", "out", audio_format="wma")

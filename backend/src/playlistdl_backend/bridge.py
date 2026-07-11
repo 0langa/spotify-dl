@@ -79,6 +79,7 @@ class Bridge:
                     "threads": int(request.get("threads", 2)),
                     "cookie_file": request.get("cookie_file"),
                     "track_ids": request.get("track_ids"),
+                    "audio_format": str(request.get("format", "mp3")),
                 },
                 daemon=True,
             )
