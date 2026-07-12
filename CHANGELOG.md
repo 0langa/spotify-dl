@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Replaced raw provider timeout traces during resolve/search with concise antivirus, VPN, firewall, and Diagnose guidance.
+- Added release checksum/signature verification, Microsoft Defender scanning when available, and a repeated frozen-backend shutdown smoke gate.
+- Promoted the current development roadmap into the tracked repository.
+
 ## 1.6.0 - 2026-07-12
 
 - Added a download queue: line up several playlists, albums, searches, or imports (each with the settings active at add time) and run them back to back with one click.

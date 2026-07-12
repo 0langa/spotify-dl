@@ -187,13 +187,13 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, isSpotifyUrl ? "Playlist failed" : "Search failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            var userMessage = UserErrorMessages.ForSourceResolution(ex, isSpotifyUrl);
+            MessageBox.Show(this, userMessage, isSpotifyUrl ? "Playlist failed" : "Search failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText.Text = isSpotifyUrl ? "Playlist resolution failed" : "Search failed";
             if (isSpotifyUrl)
             {
                 ShowFailureBanner(
-                    "Spotify resolution failed. You can type an artist and title to search instead, " +
-                    "import a CSV/JSON manifest, or run a network diagnosis.");
+                    userMessage + " You can also type an artist and title to search, or import a CSV/JSON manifest.");
             }
         }
         finally

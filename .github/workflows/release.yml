@@ -37,6 +37,10 @@ jobs:
           "value=$version" >> $env:GITHUB_OUTPUT
       - name: Build standalone executable
         run: ./scripts/build-release.ps1 -Version '${{ steps.version.outputs.value }}'
+      - name: Verify release integrity and scan executable
+        run: ./scripts/verify-release.ps1
+      - name: Smoke test frozen backend lifecycle
+        run: ./scripts/smoke-backend-lifecycle.ps1
       - name: Smoke test frozen Spotify resolver
         run: ./scripts/smoke-frozen-backend.ps1
       - name: Publish release assets

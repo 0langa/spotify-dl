@@ -72,10 +72,15 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.2.0
+./scripts/build-release.ps1 -Version 1.6.0
+./scripts/verify-release.ps1
+./scripts/smoke-backend-lifecycle.ps1
+./scripts/smoke-frozen-backend.ps1
 ```
 
 Build freezes Python backend, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use.
+
+See [ROADMAP.md](ROADMAP.md) for current development priorities and standing release gates.
 
 ## License
 
