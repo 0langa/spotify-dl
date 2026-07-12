@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private PlaylistInfo? _playlist;
     private bool _jobRunning;
     private bool _syncingSelectAll;
+    private bool _syncingQuickFormat;
     private bool _uiReady;
     private HashSet<string> _activeTrackIds = [];
     private readonly List<TrackItem> _failedTracks = [];
@@ -37,6 +38,7 @@ public partial class MainWindow : Window
         _settings = _settingsService.Load();
         DataContext = this;
         OutputDirectoryBox.Text = _settings.OutputDirectory;
+        SyncQuickFormat();
         _tracksView = CollectionViewSource.GetDefaultView(Tracks);
         _tracksView.Filter = TrackPassesFilter;
         _backend.EventReceived += Backend_EventReceived;
@@ -242,8 +244,62 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() == true)
         {
             _settingsService.Save(_settings);
+            SyncQuickFormat();
             StatusText.Text = "Settings saved";
         }
+    }
+
+    private void SyncQuickFormat()
+    {
+        var match = QuickFormatBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), _settings.Format, StringComparison.Ordinal));
+        if (match is not null)
+        {
+            _syncingQuickFormat = true;
+            QuickFormatBox.SelectedItem = match;
+            _syncingQuickFormat = false;
+        }
+    }
+
+    private void QuickFormatBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_uiReady || _syncingQuickFormat ||
+            QuickFormatBox.SelectedItem is not ComboBoxItem { Tag: string format })
+        {
+            return;
+        }
+
+        _settings.Format = format;
+        _settingsService.Save(_settings);
+        StatusText.Text = $"Audio format set to {format.ToUpperInvariant()}";
+    }
+
+    private void NotifyJobFinished()
+    {
+        if (IsActive)
+        {
+            return;
+        }
+
+        System.Media.SystemSounds.Asterisk.Play();
+        FlashWindow();
+    }
+
+    private void FlashWindow()
+    {
+        var helper = new System.Windows.Interop.WindowInteropHelper(this);
+        if (helper.Handle != nint.Zero)
+        {
+            _ = NativeMethods.FlashWindow(helper.Handle, true);
+        }
+    }
+
+    private static class NativeMethods
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        internal static extern bool FlashWindow(nint hwnd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool invert);
     }
 
     private void Backend_EventReceived(object? sender, JsonElement message)
@@ -277,6 +333,7 @@ public partial class MainWindow : Window
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
+                NotifyJobFinished();
                 if (type == "job_completed")
                 {
                     var m3uPath = message.TryGetProperty("m3u_path", out var m3u) && m3u.ValueKind == JsonValueKind.String
@@ -608,7 +665,18 @@ public partial class MainWindow : Window
             return;
         }
 
-        var dialog = new SourceOverrideWindow(track) { Owner = this };
+        var dialog = new SourceOverrideWindow(
+            track,
+            () => _backend.RequestAsync(
+                "search_sources",
+                new
+                {
+                    title = track.Title,
+                    artist = track.Artists.FirstOrDefault() ?? string.Empty,
+                    duration_seconds = track.DurationSeconds,
+                    limit = 8,
+                }))
+        { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             track.SourceOverride = dialog.SourceUrl;

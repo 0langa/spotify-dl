@@ -1,22 +1,50 @@
 <Window x:Class="PlaylistDl.App.SourceOverrideWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Choose audio source" Height="245" Width="620" ResizeMode="NoResize"
+        Title="Choose audio source" Height="560" Width="680" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" Background="#181B22">
   <Grid Margin="22">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
-      <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
     <TextBlock x:Name="TrackTitle" FontSize="18" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap" />
-    <TextBlock Grid.Row="1" Margin="0,7,0,14" Foreground="#AEB6C5"
-               Text="Paste the exact YouTube or YouTube Music video URL to use. Leave blank for automatic matching." />
-    <TextBox Grid.Row="2" x:Name="SourceUrlBox" VerticalContentAlignment="Center" />
-    <TextBlock Grid.Row="3" x:Name="ValidationText" Margin="0,7,0,0" Foreground="#FF8D8D" />
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+    <TextBlock Grid.Row="1" Margin="0,7,0,10" Foreground="#AEB6C5" TextWrapping="Wrap"
+               Text="Pick a matched source below, or paste an exact YouTube / YouTube Music URL. Leave everything empty for automatic matching." />
+    <ListBox Grid.Row="2" x:Name="CandidateList" Background="#111318" Foreground="#E7EBF2"
+             BorderBrush="#303642" SelectionChanged="CandidateList_SelectionChanged"
+             MouseDoubleClick="CandidateList_MouseDoubleClick"
+             HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <DockPanel Margin="4,3" LastChildFill="True">
+            <TextBlock DockPanel.Dock="Right" Text="{Binding DurationLabel}" Foreground="#AEB6C5"
+                       Margin="12,0,0,0" VerticalAlignment="Center" />
+            <TextBlock DockPanel.Dock="Right" Text="{Binding TypeLabel}" Foreground="#7FA3FF"
+                       Margin="12,0,0,0" VerticalAlignment="Center" />
+            <StackPanel>
+              <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding Subtitle}" Foreground="#AEB6C5" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+          </DockPanel>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <TextBlock Grid.Row="3" x:Name="SearchStatus" Margin="0,8,0,0" Foreground="#AEB6C5"
+               Text="Searching YouTube Music…" />
+    <StackPanel Grid.Row="4" Margin="0,10,0,0">
+      <TextBlock Text="Manual URL" Foreground="#AEB6C5" Margin="0,0,0,4" />
+      <TextBox x:Name="SourceUrlBox" VerticalContentAlignment="Center" Height="32" />
+    </StackPanel>
+    <TextBlock Grid.Row="5" x:Name="ValidationText" Margin="0,7,0,0" Foreground="#FF8D8D" />
+    <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+      <Button Content="Use automatic" Width="120" Margin="0,0,10,0" Click="UseAutomaticButton_Click"
+              ToolTip="Clear any manual choice and let matching decide" />
       <Button Content="Cancel" Width="90" Margin="0,0,10,0" IsCancel="True" />
       <Button Content="Save source" Width="110" Background="#4F7DFF" Foreground="White" Click="SaveButton_Click" />
     </StackPanel>

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1 - 2026-07-12
+
+- Added ranked source candidates to the per-track Source dialog: YouTube Music/YouTube results ordered by duration match, with one click or double-click to apply, replacing blind manual URL hunting.
+- Added a quick audio-format selector to the main window that stays in sync with Settings.
+- Added a completion alert (sound + taskbar flash) when a download job finishes while the window is in the background.
+- Backend gained a search_sources command (deduped songs+videos search with duration-delta ranking).
+
 ## 1.3.0 - 2026-07-12
 
 - Added per-track failure reasons: failed rows now explain themselves on hover instead of a bare `Failed`.

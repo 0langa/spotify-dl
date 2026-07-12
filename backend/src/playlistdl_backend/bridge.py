@@ -75,6 +75,21 @@ class Bridge:
             report = self._engine.diagnose()
             self.emit({"type": "diagnose_result", "request_id": request_id, **report})
             return
+        if command == "search_sources":
+            candidates = self._engine.search_sources(
+                title=str(request.get("title", "")),
+                artist=str(request.get("artist", "")),
+                duration_seconds=int(request.get("duration_seconds", 0)),
+                limit=int(request.get("limit", 8)),
+            )
+            self.emit(
+                {
+                    "type": "sources_found",
+                    "request_id": request_id,
+                    "candidates": candidates,
+                }
+            )
+            return
         if command == "resolve":
             playlist = self._engine.resolve(str(request["url"]))
             self.emit(

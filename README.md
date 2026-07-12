@@ -63,7 +63,8 @@ Minimal JSON:
 
 - Public Spotify resolution uses experimental unofficial SpotAPI/spotipyFree path and may break after platform changes.
 - Cancellation takes effect after currently active download batch finishes.
-- Automatic matching does not present ranked candidates; use the per-track Source button when an exact YouTube URL is needed.
+- Automatic download matching still picks a single candidate; the per-track Source dialog shows ranked candidates when you want to choose.
+- The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build

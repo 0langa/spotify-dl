@@ -124,6 +124,68 @@ def _default_probe(url: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _parse_duration_seconds(item: dict[str, Any]) -> int:
+    value = item.get("duration_seconds")
+    if isinstance(value, int):
+        return value
+    text = str(item.get("duration") or "")
+    parts = text.split(":")
+    if not all(part.strip().isdigit() for part in parts if part):
+        return 0
+    seconds = 0
+    try:
+        for part in parts:
+            seconds = seconds * 60 + int(part)
+    except ValueError:
+        return 0
+    return seconds
+
+
+def _candidate_from_result(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize one ytmusicapi search result into a source candidate."""
+    if not isinstance(item, dict):
+        return None
+    video_id = item.get("videoId")
+    title = item.get("title")
+    if not video_id or not title:
+        return None
+    artists = [
+        str(artist.get("name"))
+        for artist in item.get("artists") or []
+        if isinstance(artist, dict) and artist.get("name")
+    ]
+    album = item.get("album")
+    album_name = album.get("name") if isinstance(album, dict) else None
+    result_type = str(item.get("resultType") or "")
+    host = "music.youtube.com" if result_type == "song" else "www.youtube.com"
+    return {
+        "url": f"https://{host}/watch?v={video_id}",
+        "title": str(title),
+        "artists": artists,
+        "album": album_name,
+        "duration_seconds": _parse_duration_seconds(item),
+        "result_type": result_type or "video",
+    }
+
+
+def rank_candidates(
+    candidates: list[dict[str, Any]], target_duration_seconds: int
+) -> list[dict[str, Any]]:
+    """Order candidates by duration proximity; songs win ties over videos."""
+    for candidate in candidates:
+        duration = candidate.get("duration_seconds") or 0
+        candidate["duration_delta_seconds"] = (
+            duration - target_duration_seconds if target_duration_seconds and duration else None
+        )
+    def sort_key(candidate: dict[str, Any]) -> tuple[int, int]:
+        delta = candidate.get("duration_delta_seconds")
+        distance = abs(delta) if delta is not None else 10_000
+        type_rank = 0 if candidate.get("result_type") == "song" else 1
+        return (distance, type_rank)
+
+    return sorted(candidates, key=sort_key)
+
+
 def classify_failure(error_text: str | None) -> str:
     """Bucket raw downloader error text into an actionable failure class."""
     lowered = (error_text or "").lower()
@@ -299,6 +361,38 @@ class Engine:
 
     def cancel(self) -> None:
         self._cancel.set()
+
+    @staticmethod
+    def search_sources(
+        title: str,
+        artist: str,
+        duration_seconds: int = 0,
+        limit: int = 8,
+        client: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search YouTube Music for ranked source candidates for one track."""
+        if client is None:
+            from ytmusicapi import YTMusic
+
+            client = YTMusic()
+        query = f"{artist} {title}".strip()
+        if not query:
+            raise ValueError("Search needs a title or artist")
+        raw: list[dict[str, Any]] = []
+        for search_filter in ("songs", "videos"):
+            try:
+                raw.extend(client.search(query, filter=search_filter, limit=limit))
+            except Exception:  # noqa: BLE001 - provider variance
+                logger.exception("ytmusicapi search failed for filter %s", search_filter)
+        candidates = []
+        seen: set[str] = set()
+        for item in raw:
+            candidate = _candidate_from_result(item)
+            if candidate is None or candidate["url"] in seen:
+                continue
+            seen.add(candidate["url"])
+            candidates.append(candidate)
+        return rank_candidates(candidates, duration_seconds)[:limit]
 
     @staticmethod
     def ensure_runtime() -> None:
