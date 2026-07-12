@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 - 2026-07-12
+
+- Added a job library: every resolved playlist, album, track, or import is remembered under a new Library button with progress counts and timestamps.
+- Added one-click Sync per saved playlist: re-reads the source and selects only new or unfinished tracks for download, reporting how many new tracks appeared.
+- Added Open/Delete management for saved jobs; deleting a job never touches downloaded files.
+- The existing single last-job resume is migrated into the library automatically and keeps working unchanged.
+
 ## 1.3.1 - 2026-07-12
 
 - Added ranked source candidates to the per-track Source dialog: YouTube Music/YouTube results ordered by duration match, with one click or double-click to apply, replacing blind manual URL hunting.

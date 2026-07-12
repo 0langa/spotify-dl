@@ -29,7 +29,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Per-track Done/Failed results with failure reasons, one-click retry, and automatic backoff retry for rate-limit failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing and advanced yt-dlp argument passthrough
-- Restart-safe last-job resume with completed tracks and match overrides restored
+- Job library with restart-safe resume, per-source progress history, and one-click playlist Sync that downloads only new or unfinished tracks
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags and cover art
 - Configurable source folders and filename layouts, including album/track folder organization
 - Optional .m3u8 playlist export preserving track order, plus Open folder shortcut
