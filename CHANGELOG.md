@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added a persistent alternate-backend picker for antivirus/VPN path blocks; changes activate without restarting the app.
+- Fixed alternate backends without sibling FFmpeg files incorrectly overriding a working system FFmpeg.
+- Made Settings fit smaller screens with a scrollable layout.
+- Fixed queued jobs persisting completion against the wrong source or losing unselected tracks from Library history.
+- Added immediate cancellation for blocked playlist resolution, search, sync, restore, and manifest import operations.
+- Fixed partial track selection being cleared by the Select all checkbox; mixed selections now remain stable.
+- Made alternate-backend paths pasteable and validate them before saving.
+
 ## 1.6.1 - 2026-07-12
 
 - Replaced raw provider timeout traces during resolve/search with concise antivirus, VPN, firewall, and Diagnose guidance.

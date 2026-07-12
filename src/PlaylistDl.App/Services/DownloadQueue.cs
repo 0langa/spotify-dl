@@ -31,9 +31,37 @@ public sealed record QueuedJobSettings(
 public sealed record QueuedJob(
     string PlaylistId,
     string Name,
+    string SourceUrl,
+    string SourceType,
     string OutputDirectory,
+    IReadOnlyList<TrackItem> AllTracks,
     IReadOnlyList<TrackItem> Tracks,
     QueuedJobSettings Settings);
+
+public static class SavedJobSnapshot
+{
+    public static SavedJob Create(
+        string sourceUrl,
+        string sourceName,
+        string sourceType,
+        string outputDirectory,
+        IEnumerable<TrackItem> tracks) => new()
+        {
+            SourceUrl = sourceUrl,
+            SourceName = sourceName,
+            SourceType = sourceType,
+            OutputDirectory = outputDirectory,
+            Tracks = tracks.Select(track => new SavedTrack
+            {
+                Id = track.Id,
+                SpotifyUrl = track.SpotifyUrl,
+                IsSelected = track.IsSelected,
+                IsComplete = track.Status == "Done" || track.Progress >= 100,
+                OutputPath = track.OutputPath,
+                SourceOverride = track.SourceOverride,
+            }).ToList(),
+        };
+}
 
 /// <summary>In-memory FIFO of download jobs executed one after another.</summary>
 public sealed class DownloadQueue

@@ -14,7 +14,7 @@ namespace PlaylistDl.App;
 
 public partial class MainWindow : Window
 {
-    private readonly BackendClient _backend = new();
+    private readonly BackendClient _backend;
     private readonly SettingsService _settingsService = new();
     private readonly JobStore _jobStore = new();
     private readonly LibraryStore _library = new();
@@ -30,6 +30,8 @@ public partial class MainWindow : Window
     private readonly List<TrackItem> _failedTracks = [];
     private readonly DownloadQueue _queue = new();
     private bool _queueRunning;
+    private QueuedJob? _activeQueuedJob;
+    private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
     private UpdateResult? _availableUpdate;
 
@@ -39,6 +41,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _settings = _settingsService.Load();
+        _backend = new BackendClient(() => _settings.BackendExecutable);
         DataContext = this;
         OutputDirectoryBox.Text = _settings.OutputDirectory;
         SyncQuickFormat();
@@ -54,6 +57,7 @@ public partial class MainWindow : Window
         {
             ResumeButton.ToolTip = $"Resume {_savedJob.SourceName} from {_savedJob.UpdatedAt.LocalDateTime:g}";
         }
+        Closing += (_, _) => _sourceOperationCts?.Cancel();
         Closed += async (_, _) =>
         {
             SaveCurrentJob();
@@ -170,20 +174,24 @@ public partial class MainWindow : Window
             PlaylistUrlBox.Text = url;
         }
 
-        SetBusy(true, isSpotifyUrl ? "Resolving playlist…" : "Searching YouTube Music…");
+        using var operation = BeginSourceOperation(isSpotifyUrl ? "Resolving playlist…" : "Searching YouTube Music…");
         try
         {
             if (isSpotifyUrl)
             {
-                await ResolveAsync(url);
+                await ResolveAsync(url, cancellationToken: operation.Token);
             }
             else
             {
                 await SearchAsync(input.StartsWith("search:", StringComparison.OrdinalIgnoreCase)
                     ? input["search:".Length..]
-                    : input);
+                    : input, cancellationToken: operation.Token);
             }
             SaveCurrentJob();
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = "Source operation cancelled";
         }
         catch (Exception ex)
         {
@@ -198,13 +206,16 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SetBusy(false);
+            EndSourceOperation(operation);
         }
     }
 
-    private async Task SearchAsync(string query, SavedJob? restore = null)
+    private async Task SearchAsync(
+        string query,
+        SavedJob? restore = null,
+        CancellationToken cancellationToken = default)
     {
-        var response = await _backend.RequestAsync("resolve_search", new { query, limit = 12 });
+        var response = await _backend.RequestAsync("resolve_search", new { query, limit = 12 }, cancellationToken);
         ApplyResolvedPlaylist(response, restore);
     }
 
@@ -243,7 +254,10 @@ public partial class MainWindow : Window
         _queue.Enqueue(new QueuedJob(
             _playlist.Id,
             _playlist.Name,
+            _playlist.SourceUrl,
+            _playlist.SourceType,
             OutputDirectoryBox.Text,
+            [.. Tracks],
             selectedTracks,
             QueuedJobSettings.From(_settings)));
         foreach (var track in selectedTracks)
@@ -274,11 +288,13 @@ public partial class MainWindow : Window
         if (job is null)
         {
             _queueRunning = false;
+            _activeQueuedJob = null;
             UpdateQueueUi();
             return;
         }
 
         _queueRunning = true;
+        _activeQueuedJob = job;
         Tracks.ReplaceAll(job.Tracks);
         PlaylistTitle.Text = job.Name;
         _tracksView.Refresh();
@@ -345,6 +361,14 @@ public partial class MainWindow : Window
 
     private async void CancelButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_sourceOperationCts is not null)
+        {
+            _sourceOperationCts.Cancel();
+            StatusText.Text = "Cancelling source operation…";
+            await _backend.RestartAsync();
+            return;
+        }
+
         await _backend.SendCommandAsync("cancel", new { });
         StatusText.Text = "Cancellation requested…";
     }
@@ -381,14 +405,25 @@ public partial class MainWindow : Window
         });
     }
 
-    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        var previousBackend = _settings.BackendExecutable;
         var dialog = new SettingsWindow(_settings) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
             _settingsService.Save(_settings);
+            if (!string.Equals(previousBackend, _settings.BackendExecutable, StringComparison.OrdinalIgnoreCase))
+            {
+                await _backend.RestartAsync();
+                StatusText.Text = string.IsNullOrWhiteSpace(_settings.BackendExecutable)
+                    ? "Bundled backend restored"
+                    : "Alternate backend activated";
+            }
+            else
+            {
+                StatusText.Text = "Settings saved";
+            }
             SyncQuickFormat();
-            StatusText.Text = "Settings saved";
         }
     }
 
@@ -495,6 +530,7 @@ public partial class MainWindow : Window
                     if (_queueRunning)
                     {
                         _queueRunning = false;
+                        _activeQueuedJob = null;
                         StatusText.Text = "Queue finished — " + StatusText.Text;
                     }
                     NotifyJobFinished();
@@ -507,6 +543,7 @@ public partial class MainWindow : Window
                     NotifyJobFinished();
                     StatusText.Text = "Downloads cancelled";
                     SaveCurrentJob();
+                    _activeQueuedJob = null;
                 }
             }
             else if (type == "error" && _jobRunning)
@@ -520,6 +557,7 @@ public partial class MainWindow : Window
                 UpdateSelectionUi();
                 StatusText.Text = message.GetProperty("message").GetString() ?? "Download failed";
                 SaveCurrentJob();
+                _activeQueuedJob = null;
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -533,6 +571,7 @@ public partial class MainWindow : Window
             AnalyzeButton.IsEnabled = true;
             CancelButton.IsEnabled = false;
             StatusText.Text = $"Internal error while processing downloads: {ex.Message}";
+            _activeQueuedJob = null;
         }
     }
 
@@ -677,24 +716,45 @@ public partial class MainWindow : Window
         StatusText.Text = $"{complete}/{jobTracks.Count} complete";
     }
 
-    private void SetBusy(bool busy, string? status = null)
+    private CancellationTokenSource BeginSourceOperation(string status)
     {
-        AnalyzeButton.IsEnabled = !busy;
-        if (status is not null)
+        _sourceOperationCts?.Dispose();
+        _sourceOperationCts = new CancellationTokenSource();
+        AnalyzeButton.IsEnabled = false;
+        CancelButton.IsEnabled = true;
+        StatusText.Text = status;
+        return _sourceOperationCts;
+    }
+
+    private void EndSourceOperation(CancellationTokenSource operation)
+    {
+        if (ReferenceEquals(_sourceOperationCts, operation))
         {
-            StatusText.Text = status;
+            _sourceOperationCts = null;
+        }
+        operation.Dispose();
+        AnalyzeButton.IsEnabled = true;
+        if (!_jobRunning)
+        {
+            CancelButton.IsEnabled = false;
         }
     }
 
-    private async Task ResolveAsync(string url, SavedJob? restore = null)
+    private async Task ResolveAsync(
+        string url,
+        SavedJob? restore = null,
+        CancellationToken cancellationToken = default)
     {
-        var response = await _backend.RequestAsync("resolve", new { url });
+        var response = await _backend.RequestAsync("resolve", new { url }, cancellationToken);
         ApplyResolvedPlaylist(response, restore);
     }
 
-    private async Task ImportManifestAsync(string path, SavedJob? restore = null)
+    private async Task ImportManifestAsync(
+        string path,
+        SavedJob? restore = null,
+        CancellationToken cancellationToken = default)
     {
-        var response = await _backend.RequestAsync("import_manifest", new { path });
+        var response = await _backend.RequestAsync("import_manifest", new { path }, cancellationToken);
         ApplyResolvedPlaylist(response, restore);
     }
 
@@ -755,7 +815,7 @@ public partial class MainWindow : Window
 
     private async Task RestoreJobAsync(SavedJob saved, bool sync)
     {
-        SetBusy(true, sync ? "Syncing with the source…" : "Restoring saved job…");
+        using var operation = BeginSourceOperation(sync ? "Syncing with the source…" : "Restoring saved job…");
         try
         {
             PlaylistUrlBox.Text = saved.SourceUrl;
@@ -765,18 +825,18 @@ public partial class MainWindow : Window
             }
             if (saved.SourceType == "import")
             {
-                await ImportManifestAsync(saved.SourceUrl, saved);
+                await ImportManifestAsync(saved.SourceUrl, saved, operation.Token);
             }
             else if (saved.SourceType == "search")
             {
                 var query = saved.SourceUrl.StartsWith("search:", StringComparison.OrdinalIgnoreCase)
                     ? saved.SourceUrl["search:".Length..]
                     : saved.SourceUrl;
-                await SearchAsync(query, saved);
+                await SearchAsync(query, saved, operation.Token);
             }
             else
             {
-                await ResolveAsync(saved.SourceUrl, saved);
+                await ResolveAsync(saved.SourceUrl, saved, operation.Token);
             }
             _savedJob = saved;
             if (sync)
@@ -791,6 +851,10 @@ public partial class MainWindow : Window
                 SaveCurrentJob();
             }
         }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = sync ? "Sync cancelled" : "Restore cancelled";
+        }
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, sync ? "Sync failed" : "Resume failed", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -798,33 +862,37 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SetBusy(false);
+            EndSourceOperation(operation);
         }
     }
 
     private void SaveCurrentJob()
     {
-        if (_playlist is null || string.IsNullOrWhiteSpace(_playlist.SourceUrl))
+        SavedJob? snapshot;
+        if (_activeQueuedJob is not null)
+        {
+            snapshot = SavedJobSnapshot.Create(
+                _activeQueuedJob.SourceUrl,
+                _activeQueuedJob.Name,
+                _activeQueuedJob.SourceType,
+                _activeQueuedJob.OutputDirectory,
+                _activeQueuedJob.AllTracks);
+        }
+        else if (_playlist is not null && !string.IsNullOrWhiteSpace(_playlist.SourceUrl))
+        {
+            snapshot = SavedJobSnapshot.Create(
+                _playlist.SourceUrl,
+                _playlist.Name,
+                _playlist.SourceType,
+                OutputDirectoryBox.Text,
+                Tracks);
+        }
+        else
         {
             return;
         }
 
-        _savedJob = new SavedJob
-        {
-            SourceUrl = _playlist.SourceUrl,
-            SourceName = _playlist.Name,
-            SourceType = _playlist.SourceType,
-            OutputDirectory = OutputDirectoryBox.Text,
-            Tracks = Tracks.Select(track => new SavedTrack
-            {
-                Id = track.Id,
-                SpotifyUrl = track.SpotifyUrl,
-                IsSelected = track.IsSelected,
-                IsComplete = track.Status == "Done" || track.Progress >= 100,
-                OutputPath = track.OutputPath,
-                SourceOverride = track.SourceOverride,
-            }).ToList(),
-        };
+        _savedJob = snapshot;
         try
         {
             _jobStore.Save(_savedJob);
@@ -850,12 +918,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetBusy(true, "Importing track manifest…");
+        using var operation = BeginSourceOperation("Importing track manifest…");
         try
         {
             PlaylistUrlBox.Text = dialog.FileName;
-            await ImportManifestAsync(dialog.FileName);
+            await ImportManifestAsync(dialog.FileName, cancellationToken: operation.Token);
             SaveCurrentJob();
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText.Text = "Track manifest import cancelled";
         }
         catch (Exception ex)
         {
@@ -864,7 +936,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            SetBusy(false);
+            EndSourceOperation(operation);
         }
     }
 

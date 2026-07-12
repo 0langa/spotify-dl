@@ -67,6 +67,7 @@ Minimal JSON:
 - Cancellation takes effect after currently active download batch finishes.
 - Automatic download matching still picks a single candidate; the per-track Source dialog shows ranked candidates when you want to choose.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
+- If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; the override persists and activates immediately.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build

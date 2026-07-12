@@ -74,7 +74,7 @@
           <TextBlock x:Name="PlaylistSummary" Foreground="#AEB6C5" VerticalAlignment="Center" Margin="0,0,16,0" />
           <TextBox x:Name="FilterBox" Width="220" VerticalContentAlignment="Center"
                    ToolTip="Filter by title, artist, or album" TextChanged="FilterBox_TextChanged" />
-          <CheckBox x:Name="SelectAllBox" Content="Select all" IsChecked="True" Margin="14,0,0,0"
+          <CheckBox x:Name="SelectAllBox" Content="Select all" IsChecked="True" IsThreeState="True" Margin="14,0,0,0"
                     VerticalAlignment="Center" Foreground="#AEB6C5"
                     Checked="SelectAllBox_Toggled" Unchecked="SelectAllBox_Toggled" />
         </StackPanel>

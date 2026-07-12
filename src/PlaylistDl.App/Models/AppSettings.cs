@@ -16,6 +16,8 @@ public sealed class AppSettings
 
     public string? CookieFile { get; set; }
 
+    public string? BackendExecutable { get; set; }
+
     public bool WriteM3u { get; set; } = true;
 
     public string NamingPreset { get; set; } = "position_artist_title";

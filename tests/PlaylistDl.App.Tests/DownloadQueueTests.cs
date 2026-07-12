@@ -9,7 +9,10 @@ public sealed class DownloadQueueTests
     private static QueuedJob Job(string name) => new(
         PlaylistId: Guid.NewGuid().ToString("N"),
         Name: name,
+        SourceUrl: $"https://open.spotify.com/playlist/{name}",
+        SourceType: "playlist",
         OutputDirectory: @"C:\music",
+        AllTracks: [new TrackItem { Id = "t1" }],
         Tracks: [new TrackItem { Id = "t1" }],
         Settings: QueuedJobSettings.From(new AppSettings()));
 
@@ -56,6 +59,40 @@ public sealed class DownloadQueueTests
 
         Assert.Equal("mp3", snapshot.Format);
         Assert.Equal("flac", settings.Format);
+    }
+
+    [Fact]
+    public void SavedSnapshotKeepsFullSourceAndQueuedCompletion()
+    {
+        var completed = new TrackItem
+        {
+            Id = "done",
+            SpotifyUrl = "https://open.spotify.com/track/done",
+            Status = "Done",
+            Progress = 100,
+        };
+        var pending = new TrackItem
+        {
+            Id = "pending",
+            SpotifyUrl = "https://open.spotify.com/track/pending",
+        };
+        var job = Job("source") with
+        {
+            AllTracks = [completed, pending],
+            Tracks = [completed],
+        };
+
+        var saved = SavedJobSnapshot.Create(
+            job.SourceUrl,
+            job.Name,
+            job.SourceType,
+            job.OutputDirectory,
+            job.AllTracks);
+
+        Assert.Equal(job.SourceUrl, saved.SourceUrl);
+        Assert.Equal(2, saved.Tracks.Count);
+        Assert.True(saved.Tracks.Single(track => track.Id == "done").IsComplete);
+        Assert.False(saved.Tracks.Single(track => track.Id == "pending").IsComplete);
     }
 }
 

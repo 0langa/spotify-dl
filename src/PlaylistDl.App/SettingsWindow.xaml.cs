@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -17,6 +18,7 @@ public partial class SettingsWindow : Window
         SelectByTag(BitrateBox, settings.Bitrate);
         SelectByTag(ThreadsBox, settings.Threads.ToString());
         CookieFileBox.Text = settings.CookieFile ?? string.Empty;
+        BackendExecutableBox.Text = settings.BackendExecutable ?? string.Empty;
         WriteM3uBox.IsChecked = settings.WriteM3u;
         SelectByTag(NamingPresetBox, settings.NamingPreset);
         CreateSourceFolderBox.IsChecked = settings.CreateSourceFolder;
@@ -68,12 +70,44 @@ public partial class SettingsWindow : Window
 
     private void ClearCookieButton_Click(object sender, RoutedEventArgs e) => CookieFileBox.Clear();
 
+    private void ChooseBackendButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Choose alternate Playlist DL backend",
+            Filter = "Playlist DL backend (playlistdl-backend*.exe)|playlistdl-backend*.exe|Executables (*.exe)|*.exe",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) == true)
+        {
+            BackendExecutableBox.Text = dialog.FileName;
+        }
+    }
+
+    private void ClearBackendButton_Click(object sender, RoutedEventArgs e) => BackendExecutableBox.Clear();
+
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        var backendExecutable = string.IsNullOrWhiteSpace(BackendExecutableBox.Text)
+            ? null
+            : BackendExecutableBox.Text.Trim();
+        if (backendExecutable is not null && !File.Exists(backendExecutable))
+        {
+            MessageBox.Show(
+                this,
+                "The alternate backend executable does not exist. Choose a valid playlistdl-backend.exe or clear the path.",
+                "Backend not found",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            BackendExecutableBox.Focus();
+            return;
+        }
+
         _settings.Format = SelectedFormat();
         _settings.Bitrate = ((ComboBoxItem)BitrateBox.SelectedItem).Tag?.ToString() ?? "0";
         _settings.Threads = int.Parse(((ComboBoxItem)ThreadsBox.SelectedItem).Tag?.ToString() ?? "2");
         _settings.CookieFile = string.IsNullOrWhiteSpace(CookieFileBox.Text) ? null : CookieFileBox.Text;
+        _settings.BackendExecutable = backendExecutable;
         _settings.WriteM3u = WriteM3uBox.IsChecked == true;
         _settings.NamingPreset = ((ComboBoxItem)NamingPresetBox.SelectedItem).Tag?.ToString()
             ?? "position_artist_title";

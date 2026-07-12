@@ -7,10 +7,16 @@ namespace PlaylistDl.App.Services;
 
 public sealed class BackendClient : IAsyncDisposable
 {
+    private readonly Func<string?> _configuredBackendPath;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string, TaskCompletionSource<JsonElement>> _pending = [];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private Process? _process;
+
+    public BackendClient(Func<string?>? configuredBackendPath = null)
+    {
+        _configuredBackendPath = configuredBackendPath ?? (() => null);
+    }
 
     public event EventHandler<JsonElement>? EventReceived;
     public event EventHandler<string>? DiagnosticReceived;
@@ -166,9 +172,11 @@ public sealed class BackendClient : IAsyncDisposable
         }
     }
 
-    private static ProcessStartInfo CreateStartInfo()
+    private ProcessStartInfo CreateStartInfo()
     {
-        var overridePath = Environment.GetEnvironmentVariable("PLAYLISTDL_BACKEND_PATH");
+        var overridePath = SelectBackendOverride(
+            _configuredBackendPath(),
+            Environment.GetEnvironmentVariable("PLAYLISTDL_BACKEND_PATH"));
         if (!string.IsNullOrWhiteSpace(overridePath))
         {
             return ToolStartInfo(overridePath);
@@ -196,6 +204,16 @@ public sealed class BackendClient : IAsyncDisposable
         return startInfo;
     }
 
+    public static string? SelectBackendOverride(string? configuredPath, string? environmentPath)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return configuredPath.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(environmentPath) ? null : environmentPath.Trim();
+    }
+
     private static ProcessStartInfo BaseStartInfo(string fileName) => new()
     {
         FileName = fileName,
@@ -211,13 +229,30 @@ public sealed class BackendClient : IAsyncDisposable
 
     private static ProcessStartInfo ToolStartInfo(string backendPath)
     {
+        backendPath = Path.GetFullPath(backendPath);
+        if (!File.Exists(backendPath))
+        {
+            throw new FileNotFoundException(
+                "Configured backend executable was not found. Open Settings and choose a valid playlistdl-backend.exe, or clear the override.",
+                backendPath);
+        }
+
         var startInfo = BaseStartInfo(backendPath);
         var toolDirectory = Path.GetDirectoryName(backendPath)
             ?? throw new InvalidOperationException("Backend tool directory is unavailable.");
         startInfo.WorkingDirectory = toolDirectory;
-        startInfo.Environment["PLAYLISTDL_FFMPEG"] = Path.Combine(toolDirectory, "ffmpeg.exe");
+        var siblingFfmpeg = Path.Combine(toolDirectory, "ffmpeg.exe");
+        if (File.Exists(siblingFfmpeg))
+        {
+            startInfo.Environment["PLAYLISTDL_FFMPEG"] = siblingFfmpeg;
+        }
         startInfo.Environment["PATH"] = toolDirectory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         return startInfo;
+    }
+
+    public async Task RestartAsync()
+    {
+        await StopBackendAsync();
     }
 
     private static string FindRepositoryRoot()
@@ -242,6 +277,12 @@ public sealed class BackendClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await StopBackendAsync();
+        _writeLock.Dispose();
+    }
+
+    private async Task StopBackendAsync()
+    {
         if (_process is { HasExited: false })
         {
             try
@@ -263,6 +304,6 @@ public sealed class BackendClient : IAsyncDisposable
         }
 
         _process?.Dispose();
-        _writeLock.Dispose();
+        _process = null;
     }
 }
