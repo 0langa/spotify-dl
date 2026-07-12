@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -33,6 +35,111 @@ NAMING_PRESETS = {
     "artist_title": "{artist} - {title}.{output-ext}",
     "album_track_title": "{album-artist}/{album}/{track-number} - {title}.{output-ext}",
 }
+
+# Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes.
+_FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "youtube_blocked",
+        (
+            "sign in to confirm",
+            "429",
+            "too many requests",
+            "read timed out",
+            "urlopen error",
+            "http error 403",
+            "unable to download webpage",
+        ),
+    ),
+    (
+        "network",
+        (
+            "max retries exceeded",
+            "connecttimeout",
+            "failed to complete request",
+            "connection refused",
+            "getaddrinfo failed",
+            "ssl",
+        ),
+    ),
+    (
+        "no_match",
+        (
+            "no results found",
+            "lookuperror",
+            "no song matches",
+        ),
+    ),
+    (
+        "convert_error",
+        (
+            "ffmpeg",
+            "conversion",
+            "convert",
+        ),
+    ),
+)
+
+_FAILURE_PRIORITY = ("youtube_blocked", "network", "no_match", "convert_error", "unknown")
+
+RETRYABLE_FAILURE_CLASSES = frozenset({"youtube_blocked", "network"})
+
+FAILURE_HINTS = {
+    "youtube_blocked": (
+        "YouTube is rate-limiting or bot-checking this network. "
+        "Add a browser cookie file under Settings → YouTube cookies, "
+        "lower concurrency, or retry in a few minutes."
+    ),
+    "network": (
+        "The downloader could not reach the network. Check connectivity and "
+        "any antivirus/firewall rules for this app, then run a diagnosis."
+    ),
+    "no_match": (
+        "No matching YouTube source was found for some tracks. "
+        "Use the per-track Source button to pick an exact video."
+    ),
+    "convert_error": (
+        "Audio conversion failed. Verify the bundled FFmpeg is intact "
+        "or try a different output format."
+    ),
+    "unknown": "Some tracks failed to download. Retry the failed tracks to try again.",
+}
+
+
+_RETRY_BACKOFF_SECONDS = 8.0
+
+_DIAGNOSE_ENDPOINTS = (
+    "https://open.spotify.com/",
+    "https://music.youtube.com/",
+    "https://www.youtube.com/",
+)
+
+
+def _default_probe(url: str) -> tuple[bool, str]:
+    import requests
+
+    try:
+        response = requests.get(url, timeout=8, allow_redirects=True)
+        return True, f"HTTP {response.status_code}"
+    except requests.RequestException as exc:
+        return False, str(exc)
+
+
+def classify_failure(error_text: str | None) -> str:
+    """Bucket raw downloader error text into an actionable failure class."""
+    lowered = (error_text or "").lower()
+    for failure_class, needles in _FAILURE_PATTERNS:
+        if any(needle in lowered for needle in needles):
+            return failure_class
+    return "unknown"
+
+
+def dominant_failure_class(classes: list[str]) -> str | None:
+    """Pick the most actionable class across all failed tracks."""
+    present = set(classes)
+    for candidate in _FAILURE_PRIORITY:
+        if candidate in present:
+            return candidate
+    return None
 
 
 def validate_source_url(url: str) -> str:
@@ -223,6 +330,9 @@ class Engine:
         source_overrides: dict[str, str] | None = None,
         naming_preset: str = "position_artist_title",
         create_source_folder: bool = True,
+        throttle_seconds: float = 0.0,
+        retries: int = 1,
+        ytdlp_args: str | None = None,
     ) -> None:
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
@@ -272,6 +382,7 @@ class Engine:
             "restrict": "none",
             "simple_tui": True,
             "cookie_file": cookie_file,
+            "yt_dlp_args": (ytdlp_args or "").strip() or None,
             "ffmpeg": os.environ.get("PLAYLISTDL_FFMPEG", "ffmpeg"),
         }
         downloader = Downloader(settings)
@@ -282,22 +393,37 @@ class Engine:
         )
         downloader.progress_handler.set_songs(songs)
 
-        results: list[dict[str, Any]] = []
-        batch_size = max(1, min(threads, 4))
-        for offset in range(0, len(songs), batch_size):
-            if self._cancel.is_set():
+        results_by_id: dict[str, dict[str, Any]] = {}
+        pending = list(songs)
+        for attempt in range(max(0, retries) + 1):
+            cancelled = self._run_attempt(
+                downloader, pending, results_by_id, threads, throttle_seconds
+            )
+            if cancelled:
                 self._emit({"type": "job_cancelled"})
                 return
-            batch = songs[offset : offset + batch_size]
-            for resolved_song, path in downloader.download_multiple_songs(batch):
-                results.append(
-                    {
-                        "track_id": resolved_song.song_id or resolved_song.url,
-                        "path": str(path) if path else None,
-                        "success": path is not None,
-                    }
-                )
+            pending = [
+                song
+                for song in pending
+                if (record := results_by_id.get(song.song_id or song.url)) is not None
+                and not record["success"]
+                and record["error_class"] in RETRYABLE_FAILURE_CLASSES
+            ]
+            if not pending or attempt >= max(0, retries):
+                break
+            if self._wait_cancellable(_RETRY_BACKOFF_SECONDS * (attempt + 1)):
+                self._emit({"type": "job_cancelled"})
+                return
+
         downloader.progress_handler.close()
+        results = [
+            results_by_id[track_id]
+            for song in songs
+            if (track_id := song.song_id or song.url) in results_by_id
+        ]
+        failure_class = dominant_failure_class(
+            [record["error_class"] for record in results if not record["success"]]
+        )
         m3u_path = (
             self._write_playlist_file(playlist_id, output, songs, results) if write_m3u else None
         )
@@ -306,8 +432,101 @@ class Engine:
                 "type": "job_completed",
                 "results": results,
                 "m3u_path": str(m3u_path) if m3u_path else None,
+                "failure_class": failure_class,
+                "failure_hint": FAILURE_HINTS.get(failure_class) if failure_class else None,
             }
         )
+
+    def _run_attempt(
+        self,
+        downloader: Downloader,
+        songs: list[Song],
+        results_by_id: dict[str, dict[str, Any]],
+        threads: int,
+        throttle_seconds: float,
+    ) -> bool:
+        """Download one pass over songs; returns True if cancelled."""
+        batch_size = max(1, min(threads, 4))
+        for offset in range(0, len(songs), batch_size):
+            if self._cancel.is_set():
+                return True
+            if offset and throttle_seconds > 0 and self._wait_cancellable(throttle_seconds):
+                return True
+            batch = songs[offset : offset + batch_size]
+            errors_before = len(downloader.errors)
+            for resolved_song, path in downloader.download_multiple_songs(batch):
+                track_id = resolved_song.song_id or resolved_song.url
+                results_by_id[track_id] = {
+                    "track_id": track_id,
+                    "path": str(path) if path else None,
+                    "success": path is not None,
+                    "error": None,
+                    "error_class": None,
+                }
+            new_errors = list(downloader.errors[errors_before:])
+            self._attribute_errors(batch, new_errors, results_by_id)
+        return False
+
+    @staticmethod
+    def _attribute_errors(
+        batch: list[Song],
+        new_errors: list[str],
+        results_by_id: dict[str, dict[str, Any]],
+    ) -> None:
+        """Match spotDL error strings to failed songs, by display name when possible."""
+        failed = [
+            record
+            for song in batch
+            if (record := results_by_id.get(song.song_id or song.url)) is not None
+            and not record["success"]
+        ]
+        songs_by_id = {song.song_id or song.url: song for song in batch}
+        unmatched = list(new_errors)
+        for record in failed:
+            song = songs_by_id[record["track_id"]]
+            display_name = getattr(song, "display_name", None) or song.name
+            match = next(
+                (text for text in unmatched if display_name and display_name in text), None
+            )
+            if match is not None:
+                unmatched.remove(match)
+                record["error"] = match
+        leftover = " | ".join(unmatched) if unmatched else None
+        for record in failed:
+            if record["error"] is None and leftover:
+                record["error"] = leftover
+            record["error_class"] = classify_failure(record["error"])
+
+    def _wait_cancellable(self, seconds: float) -> bool:
+        """Sleep in small slices; returns True if cancelled meanwhile."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self._cancel.is_set():
+                return True
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        return self._cancel.is_set()
+
+    def diagnose(self, probe: Callable[[str], tuple[bool, str]] | None = None) -> dict[str, Any]:
+        """Probe provider endpoints so users can see exactly what is blocked."""
+        if probe is None:
+            probe = _default_probe
+        checks = []
+        for url in _DIAGNOSE_ENDPOINTS:
+            started = time.monotonic()
+            ok, detail = probe(url)
+            checks.append(
+                {
+                    "url": url,
+                    "ok": ok,
+                    "detail": detail,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                }
+            )
+        return {
+            "backend_path": sys.executable,
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "checks": checks,
+        }
 
     def _write_playlist_file(
         self,

@@ -71,6 +71,10 @@ class Bridge:
             self._engine.ensure_runtime()
             self.emit({"type": "runtime_ok", "request_id": request_id})
             return
+        if command == "diagnose":
+            report = self._engine.diagnose()
+            self.emit({"type": "diagnose_result", "request_id": request_id, **report})
+            return
         if command == "resolve":
             playlist = self._engine.resolve(str(request["url"]))
             self.emit(
@@ -112,6 +116,9 @@ class Bridge:
                     "source_overrides": request.get("source_overrides"),
                     "naming_preset": str(request.get("naming_preset", "position_artist_title")),
                     "create_source_folder": bool(request.get("create_source_folder", True)),
+                    "throttle_seconds": float(request.get("throttle_seconds", 0.0)),
+                    "retries": int(request.get("retries", 1)),
+                    "ytdlp_args": request.get("ytdlp_args"),
                 },
                 daemon=True,
             )

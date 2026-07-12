@@ -57,6 +57,53 @@ def test_unknown_command_is_reported_without_crashing_bridge() -> None:
     assert messages[2] == {"type": "pong", "request_id": "ok"}
 
 
+def test_diagnose_command_emits_diagnose_result(monkeypatch) -> None:
+    from playlistdl_backend.engine import Engine
+
+    monkeypatch.setattr(
+        Engine,
+        "diagnose",
+        lambda self: {"backend_path": "x", "frozen": False, "checks": []},
+    )
+    source = io.StringIO('{"id":"d1","type":"diagnose"}\n')
+    target = io.StringIO()
+
+    Bridge(source, target).run()
+
+    messages = [json.loads(line) for line in target.getvalue().splitlines()]
+    assert messages[1]["type"] == "diagnose_result"
+    assert messages[1]["request_id"] == "d1"
+    assert messages[1]["backend_path"] == "x"
+
+
+def test_start_forwards_reliability_options(monkeypatch) -> None:
+    import time
+
+    from playlistdl_backend.engine import Engine
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(Engine, "ensure_startable", lambda self, playlist_id, fmt: None)
+
+    def fake_download(self, **kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(Engine, "download", fake_download)
+    source = io.StringIO(
+        '{"id":"s1","type":"start","playlist_id":"p","output_dir":"out",'
+        '"throttle_seconds":2.5,"retries":3,"ytdlp_args":"--foo bar"}\n'
+    )
+    target = io.StringIO()
+
+    Bridge(source, target).run()
+
+    deadline = time.monotonic() + 5
+    while "ytdlp_args" not in captured and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert captured["throttle_seconds"] == 2.5
+    assert captured["retries"] == 3
+    assert captured["ytdlp_args"] == "--foo bar"
+
+
 def test_shutdown_stops_read_loop_so_process_can_exit() -> None:
     source = io.StringIO(
         '{"id":"bye","type":"shutdown"}\n'
