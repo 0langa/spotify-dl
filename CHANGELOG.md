@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0 - 2026-07-12
+
+- Added a download queue: line up several playlists, albums, searches, or imports (each with the settings active at add time) and run them back to back with one click.
+- Queue progress swaps the track list per job, cancellation clears the remaining queue, and the completion alert fires once at the end.
+- Added a silent daily update check on startup (Settings toggle) that turns the update button into a download badge when a newer release exists.
+
 ## 1.5.0 - 2026-07-12
 
 - Added free-text search: type an artist and title instead of a Spotify URL and download straight from ranked YouTube Music song results — a fully Spotify-independent intake that keeps working if the experimental resolver breaks.

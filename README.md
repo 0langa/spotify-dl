@@ -27,6 +27,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
 - Per-track and overall progress, duplicate scanning, batch cancellation
+- Multi-source download queue with per-job settings snapshots and sequential execution
 - Per-track Done/Failed results with failure reasons, one-click retry, and automatic backoff retry for rate-limit failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing and advanced yt-dlp argument passthrough
@@ -35,7 +36,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Configurable source folders and filename layouts, including album/track folder organization
 - Optional .m3u8 playlist export preserving track order, plus Open folder shortcut
 - Optional YouTube cookie file for authenticated/Premium formats
-- On-demand update check against published GitHub releases
+- Update awareness: silent daily startup check plus on-demand check against published GitHub releases
 - One downloadable self-contained Windows x64 executable
 
 ### Track manifest format
