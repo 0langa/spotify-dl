@@ -4,6 +4,7 @@
 
 - Replaced raw provider timeout traces during resolve/search with concise antivirus, VPN, firewall, and Diagnose guidance.
 - Added release checksum/signature verification, Microsoft Defender scanning when available, and a repeated frozen-backend shutdown smoke gate.
+- Updated GitHub Actions runtimes to current Node 24-based releases.
 - Promoted the current development roadmap into the tracked repository.
 
 ## 1.6.0 - 2026-07-12
