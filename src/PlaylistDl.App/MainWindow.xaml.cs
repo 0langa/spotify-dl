@@ -438,7 +438,7 @@ public partial class MainWindow : Window
         try
         {
             PlaylistUrlBox.Text = saved.SourceUrl;
-            if (Directory.Exists(saved.OutputDirectory) || !string.IsNullOrWhiteSpace(saved.OutputDirectory))
+            if (!string.IsNullOrWhiteSpace(saved.OutputDirectory))
             {
                 OutputDirectoryBox.Text = saved.OutputDirectory;
             }

@@ -95,6 +95,33 @@ public sealed class BackendClient : IAsyncDisposable
 
     private async Task ReadEventsAsync(StreamReader reader, CancellationToken cancellationToken)
     {
+        try
+        {
+            await ReadEventsCoreAsync(reader, cancellationToken);
+        }
+        finally
+        {
+            FailPending("Backend exited before responding.");
+        }
+    }
+
+    private void FailPending(string message)
+    {
+        List<TaskCompletionSource<JsonElement>> orphaned;
+        lock (_pending)
+        {
+            orphaned = [.. _pending.Values];
+            _pending.Clear();
+        }
+
+        foreach (var completion in orphaned)
+        {
+            completion.TrySetException(new InvalidOperationException(message));
+        }
+    }
+
+    private async Task ReadEventsCoreAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             using var document = JsonDocument.Parse(line);
