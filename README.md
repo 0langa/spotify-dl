@@ -26,7 +26,9 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
 - Per-track and overall progress, duplicate scanning, batch cancellation
-- Per-track Done/Failed results with one-click retry of failed tracks
+- Per-track Done/Failed results with failure reasons, one-click retry, and automatic backoff retry for rate-limit failures
+- Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
+- Optional download pacing and advanced yt-dlp argument passthrough
 - Restart-safe last-job resume with completed tracks and match overrides restored
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags and cover art
 - Configurable source folders and filename layouts, including album/track folder organization

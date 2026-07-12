@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 - 2026-07-12
+
+- Added per-track failure reasons: failed rows now explain themselves on hover instead of a bare `Failed`.
+- Added failure classification with an actionable in-app banner, including cookie-file guidance when YouTube rate-limits or bot-checks the network.
+- Added a network diagnosis button that probes Spotify/YouTube endpoints from the backend and names the executing binary path, so antivirus/firewall per-app blocks become visible.
+- Added automatic backoff retry for rate-limit and network failures (matching failures are never blind-retried).
+- Added optional download pacing (delay between batches) to reduce rate-limiting on large playlists.
+- Added an advanced yt-dlp arguments setting for power-user unblocking (player clients, PO tokens) without a new release.
+- Fixed the backend lingering after app close: shutdown now stops the backend read loop and the app closes stdin as a second EOF-based exit path.
+- Fixed the UI hanging forever on "Resolving playlist…" when the backend process dies mid-request.
+
 ## 1.2.1 - 2026-07-12
 
 - Fixed all Spotify resolution in standalone builds by replacing frozen curl transport with a requests-based compatible transport.
