@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 - 2026-07-12
 
 - Replaced raw provider timeout traces during resolve/search with concise antivirus, VPN, firewall, and Diagnose guidance.
 - Added release checksum/signature verification, Microsoft Defender scanning when available, and a repeated frozen-backend shutdown smoke gate.
