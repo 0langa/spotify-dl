@@ -114,34 +114,68 @@ public partial class MainWindow : Window
         "album" => "album",
         "track" => "track",
         "import" => "import",
+        "search" => "search",
         _ => "playlist",
     };
 
     private async void AnalyzeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!SpotifyInput.TryNormalize(PlaylistUrlBox.Text, out var url))
+        var input = PlaylistUrlBox.Text.Trim();
+        var isSpotifyUrl = SpotifyInput.TryNormalize(input, out var url);
+        if (!isSpotifyUrl)
         {
-            MessageBox.Show(this, "Paste a valid Spotify playlist, album, or track URL.", "Invalid link", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            if (input.Length == 0 || input.Contains("://", StringComparison.Ordinal))
+            {
+                MessageBox.Show(
+                    this,
+                    "Paste a Spotify playlist, album, or track URL — or type an artist and title to search.",
+                    "Invalid input",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+        }
+        else
+        {
+            PlaylistUrlBox.Text = url;
         }
 
-        PlaylistUrlBox.Text = url;
-
-        SetBusy(true, "Resolving playlist…");
+        SetBusy(true, isSpotifyUrl ? "Resolving playlist…" : "Searching YouTube Music…");
         try
         {
-            await ResolveAsync(url);
+            if (isSpotifyUrl)
+            {
+                await ResolveAsync(url);
+            }
+            else
+            {
+                await SearchAsync(input.StartsWith("search:", StringComparison.OrdinalIgnoreCase)
+                    ? input["search:".Length..]
+                    : input);
+            }
             SaveCurrentJob();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Playlist failed", MessageBoxButton.OK, MessageBoxImage.Error);
-            StatusText.Text = "Playlist resolution failed";
+            MessageBox.Show(this, ex.Message, isSpotifyUrl ? "Playlist failed" : "Search failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = isSpotifyUrl ? "Playlist resolution failed" : "Search failed";
+            if (isSpotifyUrl)
+            {
+                ShowFailureBanner(
+                    "Spotify resolution failed. You can type an artist and title to search instead, " +
+                    "import a CSV/JSON manifest, or run a network diagnosis.");
+            }
         }
         finally
         {
             SetBusy(false);
         }
+    }
+
+    private async Task SearchAsync(string query, SavedJob? restore = null)
+    {
+        var response = await _backend.RequestAsync("resolve_search", new { query, limit = 12 });
+        ApplyResolvedPlaylist(response, restore);
     }
 
     private async void DownloadButton_Click(object sender, RoutedEventArgs e)
@@ -198,6 +232,7 @@ public partial class MainWindow : Window
                 throttle_seconds = _settings.ThrottleSeconds,
                 retries = 1,
                 ytdlp_args = _settings.YtDlpArgs,
+                embed_lyrics = _settings.EmbedLyrics,
             });
         SaveCurrentJob();
     }
@@ -591,6 +626,13 @@ public partial class MainWindow : Window
             if (saved.SourceType == "import")
             {
                 await ImportManifestAsync(saved.SourceUrl, saved);
+            }
+            else if (saved.SourceType == "search")
+            {
+                var query = saved.SourceUrl.StartsWith("search:", StringComparison.OrdinalIgnoreCase)
+                    ? saved.SourceUrl["search:".Length..]
+                    : saved.SourceUrl;
+                await SearchAsync(query, saved);
             }
             else
             {

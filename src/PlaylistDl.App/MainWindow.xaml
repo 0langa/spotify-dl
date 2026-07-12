@@ -42,7 +42,7 @@
         </Grid.ColumnDefinitions>
         <TextBox x:Name="PlaylistUrlBox" Grid.Row="0" Grid.Column="0" Margin="0,0,10,0"
                  VerticalContentAlignment="Center"
-                 ToolTip="Paste a public Spotify playlist, album, or track URL"
+                 ToolTip="Paste a public Spotify playlist, album, or track URL — or type an artist and title to search YouTube Music"
                  Text="" />
         <Button Grid.Row="0" Grid.Column="1" Content="Import CSV/JSON" Margin="0,0,10,0"
                 Click="ImportManifestButton_Click" />

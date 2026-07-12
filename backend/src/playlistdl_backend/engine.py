@@ -141,6 +141,47 @@ def _parse_duration_seconds(item: dict[str, Any]) -> int:
     return seconds
 
 
+def _song_from_ytmusic(item: dict[str, Any], position: int) -> Song | None:
+    """Build a complete spotDL Song from one ytmusicapi song result."""
+    candidate = _candidate_from_result(item)
+    if candidate is None:
+        return None
+    artists = candidate["artists"] or ["Unknown artist"]
+    thumbnails = item.get("thumbnails") or []
+    last_thumbnail = thumbnails[-1] if thumbnails else None
+    cover_url = last_thumbnail.get("url") if isinstance(last_thumbnail, dict) else None
+    return Song(
+        name=candidate["title"],
+        artists=artists,
+        artist=artists[0],
+        genres=[],
+        disc_number=1,
+        disc_count=1,
+        album_name=candidate["album"] or "",
+        album_artist=artists[0],
+        duration=candidate["duration_seconds"],
+        year=0,
+        date="",
+        track_number=position,
+        tracks_count=0,
+        song_id=f"ytm-{candidate['url'].rsplit('=', 1)[-1]}",
+        explicit=False,
+        publisher="",
+        url=candidate["url"],
+        isrc="",
+        cover_url=cover_url,
+        copyright_text=None,
+        list_name="",
+        list_url=str(Path()),
+        list_position=position,
+        list_length=0,
+        album_id="",
+        artist_id="",
+        album_type="",
+        download_url=candidate["url"],
+    )
+
+
 def _candidate_from_result(item: dict[str, Any]) -> dict[str, Any] | None:
     """Normalize one ytmusicapi search result into a source candidate."""
     if not isinstance(item, dict):
@@ -297,6 +338,51 @@ class Engine:
             tracks=tracks,
         )
 
+    def resolve_search(
+        self, query: str, limit: int = 12, client: Any | None = None
+    ) -> PlaylistDto:
+        """Resolve free text into downloadable tracks via YouTube Music.
+
+        Spotify-independent by design: this path keeps working when the
+        unofficial Spotify resolver breaks.
+        """
+        text = query.strip()
+        if not text:
+            raise ValueError("Type an artist, title, or both to search")
+        if client is None:
+            from ytmusicapi import YTMusic
+
+            client = YTMusic()
+        raw = client.search(text, filter="songs", limit=limit)
+        songs: list[Song] = []
+        seen: set[str] = set()
+        for item in raw:
+            song = _song_from_ytmusic(item, len(songs) + 1)
+            if song is None or song.download_url in seen:
+                continue
+            seen.add(song.download_url or "")
+            songs.append(song)
+            if len(songs) >= limit:
+                break
+        if not songs:
+            raise ValueError(f"No songs found for '{text}'")
+        for song in songs:
+            song.list_length = len(songs)
+        playlist_id = uuid.uuid4().hex
+        self._songs[playlist_id] = songs
+        self._names[playlist_id] = text
+        tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
+        return PlaylistDto(
+            id=playlist_id,
+            name=text,
+            description="YouTube Music search results",
+            owner="Search",
+            cover_url="",
+            source_url=f"search:{text}",
+            source_type="search",
+            tracks=tracks,
+        )
+
     def import_manifest(self, path: str) -> PlaylistDto:
         name, songs = load_manifest(path)
         playlist_id = uuid.uuid4().hex
@@ -427,6 +513,7 @@ class Engine:
         throttle_seconds: float = 0.0,
         retries: int = 1,
         ytdlp_args: str | None = None,
+        embed_lyrics: bool = False,
     ) -> None:
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
@@ -466,7 +553,7 @@ class Engine:
 
         settings: dict[str, Any] = {
             "audio_providers": ["youtube-music", "youtube"],
-            "lyrics_providers": [],
+            "lyrics_providers": ["genius", "azlyrics", "musixmatch"] if embed_lyrics else [],
             "format": audio_format,
             "bitrate": effective_bitrate(audio_format, bitrate),
             "threads": max(1, min(threads, 4)),

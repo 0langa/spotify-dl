@@ -25,4 +25,6 @@ public sealed class AppSettings
     public int ThrottleSeconds { get; set; }
 
     public string? YtDlpArgs { get; set; }
+
+    public bool EmbedLyrics { get; set; }
 }

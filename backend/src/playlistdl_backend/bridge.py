@@ -100,6 +100,18 @@ class Bridge:
                 }
             )
             return
+        if command == "resolve_search":
+            playlist = self._engine.resolve_search(
+                str(request["query"]), limit=int(request.get("limit", 12))
+            )
+            self.emit(
+                {
+                    "type": "playlist_resolved",
+                    "request_id": request_id,
+                    "playlist": playlist.to_dict(),
+                }
+            )
+            return
         if command == "import_manifest":
             playlist = self._engine.import_manifest(str(request["path"]))
             self.emit(
@@ -134,6 +146,7 @@ class Bridge:
                     "throttle_seconds": float(request.get("throttle_seconds", 0.0)),
                     "retries": int(request.get("retries", 1)),
                     "ytdlp_args": request.get("ytdlp_args"),
+                    "embed_lyrics": bool(request.get("embed_lyrics", False)),
                 },
                 daemon=True,
             )

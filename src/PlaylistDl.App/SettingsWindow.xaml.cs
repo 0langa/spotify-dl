@@ -22,6 +22,7 @@ public partial class SettingsWindow : Window
         CreateSourceFolderBox.IsChecked = settings.CreateSourceFolder;
         SelectByTag(ThrottleBox, settings.ThrottleSeconds.ToString());
         YtDlpArgsBox.Text = settings.YtDlpArgs ?? string.Empty;
+        EmbedLyricsBox.IsChecked = settings.EmbedLyrics;
         UpdateBitrateAvailability();
     }
 
@@ -78,6 +79,7 @@ public partial class SettingsWindow : Window
         _settings.CreateSourceFolder = CreateSourceFolderBox.IsChecked == true;
         _settings.ThrottleSeconds = int.Parse(((ComboBoxItem)ThrottleBox.SelectedItem).Tag?.ToString() ?? "0");
         _settings.YtDlpArgs = string.IsNullOrWhiteSpace(YtDlpArgsBox.Text) ? null : YtDlpArgsBox.Text.Trim();
+        _settings.EmbedLyrics = EmbedLyricsBox.IsChecked == true;
         DialogResult = true;
     }
 }
