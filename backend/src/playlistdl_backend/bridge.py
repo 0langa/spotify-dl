@@ -44,7 +44,8 @@ class Bridge:
             try:
                 request = json.loads(line)
                 request_id = request.get("id")
-                self._dispatch(request)
+                if self._dispatch(request):
+                    return
             except Exception as exc:  # noqa: BLE001 - protocol boundary
                 self.emit(
                     {
@@ -59,12 +60,13 @@ class Bridge:
                     }
                 )
 
-    def _dispatch(self, request: dict[str, Any]) -> None:
+    def _dispatch(self, request: dict[str, Any]) -> bool | None:
+        """Handle one request; a truthy return stops the read loop."""
         command = request.get("type")
         request_id = request.get("id")
         if command == "ping":
             self.emit({"type": "pong", "request_id": request_id})
-            return
+            return None
         if command == "runtime_check":
             self._engine.ensure_runtime()
             self.emit({"type": "runtime_ok", "request_id": request_id})
@@ -122,7 +124,7 @@ class Bridge:
             return
         if command == "shutdown":
             self._engine.cancel()
-            return
+            return True
         raise ValueError(f"Unknown command: {command}")
 
     def _download_worker(self, request_id: str | None, **kwargs: Any) -> None:

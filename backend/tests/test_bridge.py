@@ -57,6 +57,20 @@ def test_unknown_command_is_reported_without_crashing_bridge() -> None:
     assert messages[2] == {"type": "pong", "request_id": "ok"}
 
 
+def test_shutdown_stops_read_loop_so_process_can_exit() -> None:
+    source = io.StringIO(
+        '{"id":"bye","type":"shutdown"}\n'
+        '{"id":"after","type":"ping"}\n'
+    )
+    target = io.StringIO()
+
+    Bridge(source, target).run()
+
+    messages = [json.loads(line) for line in target.getvalue().splitlines()]
+    assert messages[0]["type"] == "ready"
+    assert all(message.get("request_id") != "after" for message in messages)
+
+
 def test_format_exception_includes_hidden_provider_detail() -> None:
     error = RuntimeError("Failed to complete request.")
     error.error = "curl failure"  # type: ignore[attr-defined]
