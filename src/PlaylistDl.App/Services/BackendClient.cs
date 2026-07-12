@@ -247,6 +247,8 @@ public sealed class BackendClient : IAsyncDisposable
             try
             {
                 await SendCommandAsync("shutdown", new { });
+                // Closing stdin gives the backend a second, EOF-based exit path.
+                _process.StandardInput.Close();
             }
             catch
             {
@@ -256,6 +258,7 @@ public sealed class BackendClient : IAsyncDisposable
             if (!_process.WaitForExit(1500))
             {
                 _process.Kill(entireProcessTree: true);
+                _process.WaitForExit(2000);
             }
         }
 

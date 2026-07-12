@@ -21,4 +21,8 @@ public sealed class AppSettings
     public string NamingPreset { get; set; } = "position_artist_title";
 
     public bool CreateSourceFolder { get; set; } = true;
+
+    public int ThrottleSeconds { get; set; }
+
+    public string? YtDlpArgs { get; set; }
 }

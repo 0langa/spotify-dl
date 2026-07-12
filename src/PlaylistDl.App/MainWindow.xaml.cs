@@ -152,6 +152,7 @@ public partial class MainWindow : Window
         {
             track.Progress = 0;
             track.Status = "Queued";
+            track.ErrorText = null;
         }
 
         await StartJobAsync(selectedTracks);
@@ -172,6 +173,7 @@ public partial class MainWindow : Window
         DownloadButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
         StatusText.Text = "Starting downloads…";
+        HideFailureBanner();
         await _backend.SendCommandAsync(
             "start",
             new
@@ -189,6 +191,9 @@ public partial class MainWindow : Window
                     .ToDictionary(track => track.Id, track => track.SourceOverride),
                 naming_preset = _settings.NamingPreset,
                 create_source_folder = _settings.CreateSourceFolder,
+                throttle_seconds = _settings.ThrottleSeconds,
+                retries = 1,
+                ytdlp_args = _settings.YtDlpArgs,
             });
         SaveCurrentJob();
     }
@@ -277,7 +282,7 @@ public partial class MainWindow : Window
                     var m3uPath = message.TryGetProperty("m3u_path", out var m3u) && m3u.ValueKind == JsonValueKind.String
                         ? m3u.GetString()
                         : null;
-                    ApplyJobResults(JobResults.Parse(message), m3uPath);
+                    ApplyJobResults(JobResults.Parse(message), m3uPath, JobResults.ParseFailure(message));
                 }
                 else
                 {
@@ -297,7 +302,10 @@ public partial class MainWindow : Window
         });
     }
 
-    private void ApplyJobResults(IReadOnlyList<DownloadResult> results, string? m3uPath = null)
+    private void ApplyJobResults(
+        IReadOnlyList<DownloadResult> results,
+        string? m3uPath = null,
+        JobFailureSummary? failure = null)
     {
         _failedTracks.Clear();
         foreach (var result in results)
@@ -313,12 +321,23 @@ public partial class MainWindow : Window
                 track.Progress = 100;
                 track.Status = "Done";
                 track.OutputPath = result.Path;
+                track.ErrorText = null;
             }
             else
             {
                 track.Status = "Failed";
+                track.ErrorText = result.Error;
                 _failedTracks.Add(track);
             }
+        }
+
+        if (_failedTracks.Count > 0 && !string.IsNullOrWhiteSpace(failure?.FailureHint))
+        {
+            ShowFailureBanner(failure.FailureHint);
+        }
+        else
+        {
+            HideFailureBanner();
         }
 
         RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -340,6 +359,58 @@ public partial class MainWindow : Window
     private TrackItem? FindTrack(string trackId) =>
         Tracks.FirstOrDefault(item => item.Id == trackId || item.SpotifyUrl == trackId);
 
+    private void ShowFailureBanner(string message)
+    {
+        FailureBannerText.Text = message;
+        FailureBanner.Visibility = Visibility.Visible;
+    }
+
+    private void HideFailureBanner() => FailureBanner.Visibility = Visibility.Collapsed;
+
+    private async void DiagnoseButton_Click(object sender, RoutedEventArgs e)
+    {
+        DiagnoseButton.IsEnabled = false;
+        StatusText.Text = "Running network diagnosis…";
+        try
+        {
+            var report = await _backend.RequestAsync("diagnose", new { });
+            var lines = new List<string>();
+            if (report.TryGetProperty("backend_path", out var backendPath))
+            {
+                lines.Add($"Backend: {backendPath.GetString()}");
+                lines.Add(string.Empty);
+            }
+            if (report.TryGetProperty("checks", out var checks) && checks.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var check in checks.EnumerateArray())
+                {
+                    var ok = check.TryGetProperty("ok", out var okElement) && okElement.ValueKind == JsonValueKind.True;
+                    var url = check.GetProperty("url").GetString();
+                    var detail = check.TryGetProperty("detail", out var detailElement) ? detailElement.GetString() : null;
+                    var elapsed = check.TryGetProperty("elapsed_ms", out var elapsedElement) ? elapsedElement.GetInt32() : 0;
+                    lines.Add($"{(ok ? "OK " : "BLOCKED")}  {url}  ({elapsed} ms)");
+                    if (!ok && !string.IsNullOrWhiteSpace(detail))
+                    {
+                        lines.Add($"    {detail}");
+                    }
+                }
+            }
+            lines.Add(string.Empty);
+            lines.Add("If an endpoint is BLOCKED here but reachable in your browser, allow the backend path above in your antivirus or firewall.");
+            MessageBox.Show(this, string.Join('\n', lines), "Network diagnosis", MessageBoxButton.OK, MessageBoxImage.Information);
+            StatusText.Text = "Network diagnosis finished";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Diagnosis failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = "Network diagnosis failed";
+        }
+        finally
+        {
+            DiagnoseButton.IsEnabled = true;
+        }
+    }
+
     private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
     {
         if (_failedTracks.Count == 0)
@@ -352,6 +423,7 @@ public partial class MainWindow : Window
         {
             track.Progress = 0;
             track.Status = "Queued";
+            track.ErrorText = null;
         }
 
         RetryFailedButton.Visibility = Visibility.Collapsed;
@@ -417,6 +489,7 @@ public partial class MainWindow : Window
         FilterBox.Clear();
         _failedTracks.Clear();
         RetryFailedButton.Visibility = Visibility.Collapsed;
+        HideFailureBanner();
         UpdateSelectionUi();
         var sourceLabel = SourceLabel();
         StatusText.Text = restore is null

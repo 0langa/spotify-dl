@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>PlaylistDL</AssemblyName>
     <RootNamespace>PlaylistDl.App</RootNamespace>
-    <Version>1.2.1</Version>
+    <Version>1.3.0</Version>
     <ApplicationIcon />
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>

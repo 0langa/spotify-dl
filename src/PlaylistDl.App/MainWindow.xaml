@@ -9,6 +9,7 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
     <Border Grid.Row="0" Background="#181B22" Padding="24,18">
@@ -107,7 +108,7 @@
           <DataGridTemplateColumn Header="Progress" Width="160">
             <DataGridTemplateColumn.CellTemplate>
               <DataTemplate>
-                <Grid Margin="4">
+                <Grid Margin="4" ToolTip="{Binding ErrorText}" ToolTipService.IsEnabled="{Binding HasError}">
                   <ProgressBar Value="{Binding Progress}" Maximum="100" Height="16" />
                   <TextBlock Text="{Binding Status}" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </Grid>
@@ -118,7 +119,19 @@
       </DataGrid>
     </Grid>
 
-    <Border Grid.Row="3" Background="#181B22" Padding="24,14">
+    <Border x:Name="FailureBanner" Grid.Row="3" Background="#3A2A16" BorderBrush="#8A6A2F"
+            BorderThickness="0,1,0,1" Padding="24,10" Visibility="Collapsed">
+      <DockPanel LastChildFill="True">
+        <Button DockPanel.Dock="Right" Content="Open settings" Margin="10,0,0,0"
+                VerticalAlignment="Center" Click="SettingsButton_Click" />
+        <Button x:Name="DiagnoseButton" DockPanel.Dock="Right" Content="Diagnose network"
+                Margin="10,0,0,0" VerticalAlignment="Center" Click="DiagnoseButton_Click" />
+        <TextBlock x:Name="FailureBannerText" Foreground="#F0D9A6" TextWrapping="Wrap"
+                   VerticalAlignment="Center" />
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="4" Background="#181B22" Padding="24,14">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />

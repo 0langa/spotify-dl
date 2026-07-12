@@ -11,6 +11,7 @@ public sealed class TrackItem : INotifyPropertyChanged
     private bool _isSelected = true;
     private string? _outputPath;
     private string? _sourceOverride;
+    private string? _errorText;
 
     [JsonPropertyName("id")]
     public string Id { get; init; } = string.Empty;
@@ -64,6 +65,22 @@ public sealed class TrackItem : INotifyPropertyChanged
         get => _outputPath;
         set => SetField(ref _outputPath, value);
     }
+
+    [JsonIgnore]
+    public string? ErrorText
+    {
+        get => _errorText;
+        set
+        {
+            if (SetField(ref _errorText, value))
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasError)));
+            }
+        }
+    }
+
+    [JsonIgnore]
+    public bool HasError => !string.IsNullOrEmpty(ErrorText);
 
     [JsonIgnore]
     public string? SourceOverride
