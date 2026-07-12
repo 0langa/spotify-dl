@@ -140,6 +140,7 @@
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <StackPanel>
           <TextBlock x:Name="StatusText" Text="Ready" Foreground="White" />
@@ -156,10 +157,13 @@
             <ComboBoxItem Tag="wav">WAV</ComboBoxItem>
           </ComboBox>
         </StackPanel>
-        <Button Grid.Column="2" x:Name="RetryFailedButton" Content="Retry failed" Visibility="Collapsed"
+        <Button Grid.Column="2" x:Name="AddToQueueButton" Content="Add to queue" IsEnabled="False"
+                Margin="0,0,10,0" Click="AddToQueueButton_Click"
+                ToolTip="Queue the current selection with today's settings, then add more sources" />
+        <Button Grid.Column="3" x:Name="RetryFailedButton" Content="Retry failed" Visibility="Collapsed"
                 Margin="0,0,10,0" Click="RetryFailedButton_Click" />
-        <Button Grid.Column="3" x:Name="CancelButton" Content="Cancel" IsEnabled="False" Margin="0,0,10,0" Click="CancelButton_Click" />
-        <Button Grid.Column="4" x:Name="DownloadButton" Content="Download audio" IsEnabled="False"
+        <Button Grid.Column="4" x:Name="CancelButton" Content="Cancel" IsEnabled="False" Margin="0,0,10,0" Click="CancelButton_Click" />
+        <Button Grid.Column="5" x:Name="DownloadButton" Content="Download audio" IsEnabled="False"
                 Background="#4F7DFF" Foreground="White" Click="DownloadButton_Click" />
       </Grid>
     </Border>

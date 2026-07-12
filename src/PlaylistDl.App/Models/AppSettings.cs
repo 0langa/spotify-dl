@@ -27,4 +27,8 @@ public sealed class AppSettings
     public string? YtDlpArgs { get; set; }
 
     public bool EmbedLyrics { get; set; }
+
+    public bool AutoUpdateCheck { get; set; } = true;
+
+    public DateTimeOffset? LastUpdateCheckUtc { get; set; }
 }

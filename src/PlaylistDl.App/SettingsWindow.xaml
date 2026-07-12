@@ -101,6 +101,7 @@
       <CheckBox x:Name="EmbedLyricsBox" Content="Embed lyrics into downloaded files when available" Foreground="White" Margin="0,12,0,0" />
       <TextBlock Text="Fetches lyrics from public providers during download and stores them in the audio tags."
                  Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+      <CheckBox x:Name="AutoUpdateCheckBox" Content="Check for updates on startup (once a day)" Foreground="White" Margin="0,12,0,0" />
     </StackPanel>
 
     <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Right">

@@ -124,6 +124,10 @@ class Bridge:
             return
         if command == "start":
             if self._worker is not None and self._worker.is_alive():
+                # A queue can send the next start right after job_completed while
+                # the previous worker thread is still unwinding — give it a moment.
+                self._worker.join(timeout=5)
+            if self._worker is not None and self._worker.is_alive():
                 raise RuntimeError("A download job is already running")
             self._engine.ensure_startable(
                 str(request["playlist_id"]), str(request.get("format", "mp3"))

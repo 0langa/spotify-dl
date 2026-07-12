@@ -45,6 +45,10 @@ public sealed class UpdateService
         return new UpdateResult(latest, release.TagName, page);
     }
 
+    /// <summary>Gate for the silent startup check: enabled and not checked within ~a day.</summary>
+    public static bool ShouldAutoCheck(bool enabled, DateTimeOffset? lastCheckUtc, DateTimeOffset nowUtc) =>
+        enabled && (lastCheckUtc is null || nowUtc - lastCheckUtc >= TimeSpan.FromHours(20));
+
     public static Version ParseVersion(string tag)
     {
         var value = tag.Trim().TrimStart('v', 'V');

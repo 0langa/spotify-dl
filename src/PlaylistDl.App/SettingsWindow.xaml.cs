@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
         SelectByTag(ThrottleBox, settings.ThrottleSeconds.ToString());
         YtDlpArgsBox.Text = settings.YtDlpArgs ?? string.Empty;
         EmbedLyricsBox.IsChecked = settings.EmbedLyrics;
+        AutoUpdateCheckBox.IsChecked = settings.AutoUpdateCheck;
         UpdateBitrateAvailability();
     }
 
@@ -80,6 +81,7 @@ public partial class SettingsWindow : Window
         _settings.ThrottleSeconds = int.Parse(((ComboBoxItem)ThrottleBox.SelectedItem).Tag?.ToString() ?? "0");
         _settings.YtDlpArgs = string.IsNullOrWhiteSpace(YtDlpArgsBox.Text) ? null : YtDlpArgsBox.Text.Trim();
         _settings.EmbedLyrics = EmbedLyricsBox.IsChecked == true;
+        _settings.AutoUpdateCheck = AutoUpdateCheckBox.IsChecked == true;
         DialogResult = true;
     }
 }

@@ -28,6 +28,8 @@ public partial class MainWindow : Window
     private bool _uiReady;
     private HashSet<string> _activeTrackIds = [];
     private readonly List<TrackItem> _failedTracks = [];
+    private readonly DownloadQueue _queue = new();
+    private bool _queueRunning;
     private SavedJob? _savedJob;
     private UpdateResult? _availableUpdate;
 
@@ -57,6 +59,32 @@ public partial class MainWindow : Window
             SaveCurrentJob();
             await _backend.DisposeAsync();
         };
+        Loaded += async (_, _) => await AutoCheckForUpdatesAsync();
+    }
+
+    private async Task AutoCheckForUpdatesAsync()
+    {
+        if (!UpdateService.ShouldAutoCheck(_settings.AutoUpdateCheck, _settings.LastUpdateCheckUtc, DateTimeOffset.UtcNow))
+        {
+            return;
+        }
+
+        try
+        {
+            var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+            _availableUpdate = await _updateService.CheckAsync(current);
+            _settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
+            _settingsService.Save(_settings);
+            if (_availableUpdate is not null)
+            {
+                UpdateButton.Content = $"Get {_availableUpdate.Tag}";
+                UpdateButton.ToolTip = "A newer release is available — click to open it";
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or FormatException or InvalidDataException)
+        {
+            // Startup check stays silent; the manual button still reports problems.
+        }
     }
 
     private bool TrackPassesFilter(object item)
@@ -102,7 +130,9 @@ public partial class MainWindow : Window
         _syncingSelectAll = true;
         SelectAllBox.IsChecked = selected == Tracks.Count ? true : selected == 0 ? false : null;
         _syncingSelectAll = false;
-        DownloadButton.IsEnabled = selected > 0 && !_jobRunning && _playlist is not null;
+        DownloadButton.IsEnabled = (selected > 0 && !_jobRunning && _playlist is not null) ||
+            (!_queue.IsEmpty && !_jobRunning);
+        AddToQueueButton.IsEnabled = selected > 0 && !_jobRunning && _playlist is not null;
         if (_playlist is not null)
         {
             PlaylistSummary.Text = $"{SourceLabel()} · {selected}/{Tracks.Count} tracks selected · {_playlist.Owner}";
@@ -180,6 +210,12 @@ public partial class MainWindow : Window
 
     private async void DownloadButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!_queue.IsEmpty)
+        {
+            await RunQueueAsync();
+            return;
+        }
+
         var selectedTracks = Tracks.Where(track => track.IsSelected).ToList();
         if (_playlist is null || selectedTracks.Count == 0)
         {
@@ -196,14 +232,84 @@ public partial class MainWindow : Window
         await StartJobAsync(selectedTracks);
     }
 
-    private async Task StartJobAsync(IReadOnlyList<TrackItem> jobTracks)
+    private void AddToQueueButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_playlist is null)
+        var selectedTracks = Tracks.Where(track => track.IsSelected).ToList();
+        if (_playlist is null || selectedTracks.Count == 0)
         {
             return;
         }
 
-        Directory.CreateDirectory(OutputDirectoryBox.Text);
+        _queue.Enqueue(new QueuedJob(
+            _playlist.Id,
+            _playlist.Name,
+            OutputDirectoryBox.Text,
+            selectedTracks,
+            QueuedJobSettings.From(_settings)));
+        foreach (var track in selectedTracks)
+        {
+            track.Progress = 0;
+            track.Status = "Queued";
+            track.ErrorText = null;
+        }
+
+        UpdateQueueUi();
+        StatusText.Text = $"Added \"{_playlist.Name}\" to the queue — resolve another source or start the queue";
+    }
+
+    private void UpdateQueueUi()
+    {
+        DownloadButton.Content = _queue.IsEmpty
+            ? "Download audio"
+            : $"Start queue ({_queue.Count})";
+        if (!_queue.IsEmpty && !_jobRunning)
+        {
+            DownloadButton.IsEnabled = true;
+        }
+    }
+
+    private async Task RunQueueAsync()
+    {
+        var job = _queue.DequeueNext();
+        if (job is null)
+        {
+            _queueRunning = false;
+            UpdateQueueUi();
+            return;
+        }
+
+        _queueRunning = true;
+        Tracks.ReplaceAll(job.Tracks);
+        PlaylistTitle.Text = job.Name;
+        _tracksView.Refresh();
+        UpdateQueueUi();
+        StatusText.Text = _queue.IsEmpty
+            ? $"Queue: downloading \"{job.Name}\""
+            : $"Queue: downloading \"{job.Name}\" — {_queue.Count} more waiting";
+        await StartJobCoreAsync(job.PlaylistId, job.OutputDirectory, job.Tracks, job.Settings);
+    }
+
+    private Task StartJobAsync(IReadOnlyList<TrackItem> jobTracks)
+    {
+        if (_playlist is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        return StartJobCoreAsync(
+            _playlist.Id,
+            OutputDirectoryBox.Text,
+            jobTracks,
+            QueuedJobSettings.From(_settings));
+    }
+
+    private async Task StartJobCoreAsync(
+        string playlistId,
+        string outputDirectory,
+        IReadOnlyList<TrackItem> jobTracks,
+        QueuedJobSettings snapshot)
+    {
+        Directory.CreateDirectory(outputDirectory);
         _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
         RetryFailedButton.Visibility = Visibility.Collapsed;
         _jobRunning = true;
@@ -216,23 +322,23 @@ public partial class MainWindow : Window
             "start",
             new
             {
-                playlist_id = _playlist.Id,
-                output_dir = OutputDirectoryBox.Text,
-                format = _settings.Format,
-                bitrate = _settings.Bitrate,
-                threads = _settings.Threads,
-                cookie_file = _settings.CookieFile,
+                playlist_id = playlistId,
+                output_dir = outputDirectory,
+                format = snapshot.Format,
+                bitrate = snapshot.Bitrate,
+                threads = snapshot.Threads,
+                cookie_file = snapshot.CookieFile,
                 track_ids = jobTracks.Select(track => track.Id).ToList(),
-                write_m3u = _settings.WriteM3u,
+                write_m3u = snapshot.WriteM3u,
                 source_overrides = jobTracks
                     .Where(track => !string.IsNullOrWhiteSpace(track.SourceOverride))
                     .ToDictionary(track => track.Id, track => track.SourceOverride),
-                naming_preset = _settings.NamingPreset,
-                create_source_folder = _settings.CreateSourceFolder,
-                throttle_seconds = _settings.ThrottleSeconds,
+                naming_preset = snapshot.NamingPreset,
+                create_source_folder = snapshot.CreateSourceFolder,
+                throttle_seconds = snapshot.ThrottleSeconds,
                 retries = 1,
-                ytdlp_args = _settings.YtDlpArgs,
-                embed_lyrics = _settings.EmbedLyrics,
+                ytdlp_args = snapshot.YtDlpArgs,
+                embed_lyrics = snapshot.EmbedLyrics,
             });
         SaveCurrentJob();
     }
@@ -341,7 +447,12 @@ public partial class MainWindow : Window
 
     private void Backend_EventReceived(object? sender, JsonElement message)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.InvokeAsync(() => HandleBackendEvent(message));
+    }
+
+    private async void HandleBackendEvent(JsonElement message)
+    {
+        try
         {
             var type = message.GetProperty("type").GetString();
             if (type == "track_progress")
@@ -370,16 +481,30 @@ public partial class MainWindow : Window
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
-                NotifyJobFinished();
                 if (type == "job_completed")
                 {
                     var m3uPath = message.TryGetProperty("m3u_path", out var m3u) && m3u.ValueKind == JsonValueKind.String
                         ? m3u.GetString()
                         : null;
                     ApplyJobResults(JobResults.Parse(message), m3uPath, JobResults.ParseFailure(message));
+                    if (_queueRunning && !_queue.IsEmpty)
+                    {
+                        await RunQueueAsync();
+                        return;
+                    }
+                    if (_queueRunning)
+                    {
+                        _queueRunning = false;
+                        StatusText.Text = "Queue finished — " + StatusText.Text;
+                    }
+                    NotifyJobFinished();
                 }
                 else
                 {
+                    _queueRunning = false;
+                    _queue.Clear();
+                    UpdateQueueUi();
+                    NotifyJobFinished();
                     StatusText.Text = "Downloads cancelled";
                     SaveCurrentJob();
                 }
@@ -387,13 +512,28 @@ public partial class MainWindow : Window
             else if (type == "error" && _jobRunning)
             {
                 _jobRunning = false;
+                _queueRunning = false;
+                _queue.Clear();
+                UpdateQueueUi();
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
                 StatusText.Text = message.GetProperty("message").GetString() ?? "Download failed";
                 SaveCurrentJob();
             }
-        });
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A UI-side failure while reacting to a backend event must never
+            // silently stall the queue or hide the job state.
+            _jobRunning = false;
+            _queueRunning = false;
+            _queue.Clear();
+            UpdateQueueUi();
+            AnalyzeButton.IsEnabled = true;
+            CancelButton.IsEnabled = false;
+            StatusText.Text = $"Internal error while processing downloads: {ex.Message}";
+        }
     }
 
     private void ApplyJobResults(
