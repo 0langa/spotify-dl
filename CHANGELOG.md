@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 - 2026-07-12
+
+- Added free-text search: type an artist and title instead of a Spotify URL and download straight from ranked YouTube Music song results — a fully Spotify-independent intake that keeps working if the experimental resolver breaks.
+- Search jobs are first-class: saved to the library, resumable, and syncable like any other source.
+- Added optional lyrics embedding (public providers) into downloaded audio tags.
+- Spotify resolution failures now show the guidance banner (search, manifest import, network diagnosis) instead of only an error dialog.
+
 ## 1.4.0 - 2026-07-12
 
 - Added a job library: every resolved playlist, album, track, or import is remembered under a new Library button with progress counts and timestamps.
