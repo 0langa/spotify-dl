@@ -1,0 +1,47 @@
+<Window x:Class="PlaylistDl.App.LibraryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Library" Height="520" Width="760" ResizeMode="CanResize"
+        MinHeight="360" MinWidth="620"
+        WindowStartupLocation="CenterOwner" Background="#111318" Foreground="White">
+  <Grid Margin="22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <StackPanel>
+      <TextBlock Text="Saved jobs" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock Text="Every playlist, album, track, or import you resolve is remembered here. Open restores it as-is; Sync re-reads the source and selects only what is new or unfinished."
+                 Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,10" />
+    </StackPanel>
+    <ListBox Grid.Row="1" x:Name="JobsList" Background="#181B22" Foreground="#E7EBF2"
+             BorderBrush="#303642" HorizontalContentAlignment="Stretch"
+             MouseDoubleClick="JobsList_MouseDoubleClick"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <DockPanel Margin="4,5" LastChildFill="True">
+            <TextBlock DockPanel.Dock="Right" Text="{Binding UpdatedLabel}" Foreground="#AEB6C5"
+                       Margin="12,0,0,0" VerticalAlignment="Center" />
+            <TextBlock DockPanel.Dock="Right" Text="{Binding ProgressLabel}" Foreground="#7FA3FF"
+                       Margin="12,0,0,0" VerticalAlignment="Center" />
+            <StackPanel>
+              <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding Subtitle}" Foreground="#AEB6C5" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+          </DockPanel>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <DockPanel Grid.Row="2" Margin="0,14,0,0" LastChildFill="False">
+      <Button DockPanel.Dock="Left" Content="Delete" Width="90" Click="DeleteButton_Click"
+              ToolTip="Remove this saved job (downloaded files stay on disk)" />
+      <Button DockPanel.Dock="Right" Content="Open" Width="90" Background="#4F7DFF" Foreground="White"
+              Click="OpenButton_Click" ToolTip="Restore this job exactly as last saved" />
+      <Button DockPanel.Dock="Right" Content="Sync" Width="90" Margin="0,0,10,0" Click="SyncButton_Click"
+              ToolTip="Re-read the source and select only new or unfinished tracks" />
+      <Button DockPanel.Dock="Right" Content="Close" Width="90" Margin="0,0,10,0" IsCancel="True" />
+    </DockPanel>
+  </Grid>
+</Window>

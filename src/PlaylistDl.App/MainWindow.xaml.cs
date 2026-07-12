@@ -17,6 +17,7 @@ public partial class MainWindow : Window
     private readonly BackendClient _backend = new();
     private readonly SettingsService _settingsService = new();
     private readonly JobStore _jobStore = new();
+    private readonly LibraryStore _library = new();
     private readonly UpdateService _updateService = new();
     private readonly AppSettings _settings;
     private readonly ICollectionView _tracksView;
@@ -45,6 +46,7 @@ public partial class MainWindow : Window
         _backend.DiagnosticReceived += (_, message) => Dispatcher.Invoke(() => StatusText.Text = message);
         _uiReady = true;
         _savedJob = _jobStore.Load();
+        _library.MigrateFromLastJob(_savedJob);
         ResumeButton.Visibility = _savedJob is null ? Visibility.Collapsed : Visibility.Visible;
         if (_savedJob is not null)
         {
@@ -564,7 +566,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        SetBusy(true, "Restoring last job…");
+        await RestoreJobAsync(saved, sync: false);
+    }
+
+    private async void LibraryButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new LibraryWindow(_library) { Owner = this };
+        if (dialog.ShowDialog() == true && dialog.SelectedJob is not null)
+        {
+            await RestoreJobAsync(dialog.SelectedJob, dialog.SyncRequested);
+        }
+    }
+
+    private async Task RestoreJobAsync(SavedJob saved, bool sync)
+    {
+        SetBusy(true, sync ? "Syncing with the source…" : "Restoring saved job…");
         try
         {
             PlaylistUrlBox.Text = saved.SourceUrl;
@@ -581,11 +597,22 @@ public partial class MainWindow : Window
                 await ResolveAsync(saved.SourceUrl, saved);
             }
             _savedJob = saved;
+            if (sync)
+            {
+                var newTracks = Tracks.Count(track => !saved.Tracks.Any(item =>
+                    (!string.IsNullOrEmpty(item.SpotifyUrl) && item.SpotifyUrl == track.SpotifyUrl) ||
+                    item.Id == track.Id));
+                var remaining = Tracks.Count(track => track.IsSelected);
+                StatusText.Text = newTracks > 0
+                    ? $"Sync found {newTracks} new tracks — {remaining} selected for download"
+                    : $"Sync: no new tracks — {remaining} unfinished selected";
+                SaveCurrentJob();
+            }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Resume failed", MessageBoxButton.OK, MessageBoxImage.Error);
-            StatusText.Text = "Could not restore the saved job";
+            MessageBox.Show(this, ex.Message, sync ? "Sync failed" : "Resume failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText.Text = sync ? "Could not sync the saved job" : "Could not restore the saved job";
         }
         finally
         {
@@ -619,6 +646,7 @@ public partial class MainWindow : Window
         try
         {
             _jobStore.Save(_savedJob);
+            _library.Save(_savedJob);
             ResumeButton.Visibility = Visibility.Visible;
         }
         catch (IOException)

@@ -23,6 +23,7 @@
                   Click="UpdateButton_Click" />
           <Button x:Name="ResumeButton" Content="Resume last job" Visibility="Collapsed"
                   Margin="0,0,10,0" Click="ResumeButton_Click" />
+          <Button Content="Library" Width="90" Margin="0,0,10,0" Click="LibraryButton_Click" />
           <Button Content="Settings" Width="100" Click="SettingsButton_Click" />
         </StackPanel>
       </DockPanel>
