@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.2 - 2026-07-12
+
 - Added a persistent alternate-backend picker for antivirus/VPN path blocks; changes activate without restarting the app.
 - Fixed alternate backends without sibling FFmpeg files incorrectly overriding a working system FFmpeg.
 - Made Settings fit smaller screens with a scrollable layout.
