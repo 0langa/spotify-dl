@@ -90,6 +90,21 @@ def test_resolve_playlist_routes_to_playlist_metadata(
     assert [track.title for track in result.tracks] == ["One", "Two"]
 
 
+def test_resolve_handles_more_than_one_thousand_tracks(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata: dict[str, Any] = {"name": "Huge Mix", "author_name": "Owner"}
+    songs = [_fake_song(f"Track {index}", index) for index in range(1, 1201)]
+    monkeypatch.setattr(
+        engine_module.Playlist, "get_metadata", staticmethod(lambda url: (metadata, songs))
+    )
+
+    result = engine.resolve("https://open.spotify.com/playlist/huge")
+
+    assert len(result.tracks) == 1200
+    assert result.tracks[-1].position == 1200
+
+
 def test_resolve_album_routes_to_album_metadata(
     engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

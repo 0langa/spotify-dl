@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 - 2026-07-12
+
+- Fixed all Spotify resolution in standalone builds by replacing frozen curl transport with a requests-based compatible transport.
+- Added provider error details so connection failures no longer collapse to `Failed to complete request.`
+- Added 1,200-track resolver coverage and bulk WPF collection updates for large playlists.
+- Fixed imported-manifest downloads trying to re-resolve synthetic Spotify IDs.
+- Fixed MP3 tagging failure when ISRC metadata is absent.
+- Added release-gating frozen-backend Spotify smoke test.
+- Verified real download, MP3 conversion, and title/artist/album tags using NASA JPL public media.
+
 ## 1.2.0 - 2026-07-12
 
 - Added restart-safe last-job persistence and resume; completed tracks and manual choices are restored after reopening the app.

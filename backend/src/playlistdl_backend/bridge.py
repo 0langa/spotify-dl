@@ -11,6 +11,15 @@ from playlistdl_backend import __version__
 from playlistdl_backend.engine import Engine
 
 
+def format_exception(exc: Exception) -> str:
+    """Include safe provider detail hidden by some wrapper exceptions."""
+    message = str(exc)
+    provider_detail = getattr(exc, "error", None)
+    if provider_detail and str(provider_detail) not in message:
+        return f"{message} ({provider_detail})"
+    return message
+
+
 class Bridge:
     def __init__(self, input_stream: TextIO | None = None, output_stream: TextIO | None = None):
         self._input = input_stream or sys.stdin
@@ -41,7 +50,7 @@ class Bridge:
                     {
                         "type": "error",
                         "request_id": request_id,
-                        "message": str(exc),
+                        "message": format_exception(exc),
                         "detail": (
                             traceback.format_exc()
                             if logging.getLogger().isEnabledFor(logging.DEBUG)
@@ -55,6 +64,10 @@ class Bridge:
         request_id = request.get("id")
         if command == "ping":
             self.emit({"type": "pong", "request_id": request_id})
+            return
+        if command == "runtime_check":
+            self._engine.ensure_runtime()
+            self.emit({"type": "runtime_ok", "request_id": request_id})
             return
         if command == "resolve":
             playlist = self._engine.resolve(str(request["url"]))
@@ -120,6 +133,6 @@ class Bridge:
                 {
                     "type": "error",
                     "request_id": request_id,
-                    "message": str(exc),
+                    "message": format_exception(exc),
                 }
             )

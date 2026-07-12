@@ -4,7 +4,7 @@ import io
 import json
 
 from playlistdl_backend import __version__
-from playlistdl_backend.bridge import Bridge
+from playlistdl_backend.bridge import Bridge, format_exception
 
 
 def test_ping_returns_protocol_response() -> None:
@@ -16,6 +16,16 @@ def test_ping_returns_protocol_response() -> None:
     messages = [json.loads(line) for line in target.getvalue().splitlines()]
     assert messages[0] == {"type": "ready", "version": __version__, "protocol": 1}
     assert messages[1] == {"type": "pong", "request_id": "abc"}
+
+
+def test_runtime_check_loads_provider_resources() -> None:
+    source = io.StringIO('{"id":"runtime","type":"runtime_check"}\n')
+    target = io.StringIO()
+
+    Bridge(source, target).run()
+
+    messages = [json.loads(line) for line in target.getvalue().splitlines()]
+    assert messages[1] == {"type": "runtime_ok", "request_id": "runtime"}
 
 
 def test_start_validation_errors_are_synchronous_and_no_job_started() -> None:
@@ -45,3 +55,10 @@ def test_unknown_command_is_reported_without_crashing_bridge() -> None:
     assert messages[1]["type"] == "error"
     assert messages[1]["request_id"] == "bad"
     assert messages[2] == {"type": "pong", "request_id": "ok"}
+
+
+def test_format_exception_includes_hidden_provider_detail() -> None:
+    error = RuntimeError("Failed to complete request.")
+    error.error = "curl failure"  # type: ignore[attr-defined]
+
+    assert format_exception(error) == "Failed to complete request. (curl failure)"

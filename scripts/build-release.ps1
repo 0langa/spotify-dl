@@ -29,10 +29,13 @@ try {
         --noconfirm `
         --onefile `
         --name playlistdl-backend `
+        --hidden-import _cffi_backend `
+        --collect-all curl_cffi `
         --collect-all spotdl `
         --collect-all SpotipyFree `
         --collect-all spotapi `
         --collect-all pykakasi `
+        --collect-all ytmusicapi `
         --distpath $backendDist `
         --workpath $pyinstallerWork `
         --specpath $pyinstallerWork `

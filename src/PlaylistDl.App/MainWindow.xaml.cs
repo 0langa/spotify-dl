@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Net.Http;
@@ -30,7 +29,7 @@ public partial class MainWindow : Window
     private SavedJob? _savedJob;
     private UpdateResult? _availableUpdate;
 
-    public ObservableCollection<TrackItem> Tracks { get; } = [];
+    public RangeObservableCollection<TrackItem> Tracks { get; } = [];
 
     public MainWindow()
     {
@@ -116,13 +115,13 @@ public partial class MainWindow : Window
 
     private async void AnalyzeButton_Click(object sender, RoutedEventArgs e)
     {
-        var url = PlaylistUrlBox.Text.Trim();
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            !uri.Host.EndsWith("spotify.com", StringComparison.OrdinalIgnoreCase))
+        if (!SpotifyInput.TryNormalize(PlaylistUrlBox.Text, out var url))
         {
             MessageBox.Show(this, "Paste a valid Spotify playlist, album, or track URL.", "Invalid link", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+
+        PlaylistUrlBox.Text = url;
 
         SetBusy(true, "Resolving playlist…");
         try
@@ -396,7 +395,7 @@ public partial class MainWindow : Window
     private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
     {
         _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        Tracks.Clear();
+        var resolvedTracks = new List<TrackItem>();
         foreach (var track in _playlist?.Tracks ?? [])
         {
             var saved = restore?.Tracks.FirstOrDefault(item =>
@@ -410,8 +409,9 @@ public partial class MainWindow : Window
                 track.SourceOverride = saved.SourceOverride;
             }
             track.PropertyChanged += Track_PropertyChanged;
-            Tracks.Add(track);
+            resolvedTracks.Add(track);
         }
+        Tracks.ReplaceAll(resolvedTracks);
 
         PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
         FilterBox.Clear();

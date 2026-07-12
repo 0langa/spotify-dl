@@ -193,6 +193,13 @@ class Engine:
     def cancel(self) -> None:
         self._cancel.set()
 
+    @staticmethod
+    def ensure_runtime() -> None:
+        """Load provider runtime resources omitted easily by freezer recipes."""
+        from ytmusicapi import YTMusic
+
+        YTMusic()
+
     def ensure_startable(self, playlist_id: str, audio_format: str) -> None:
         """Validate a start request synchronously so errors precede job_started."""
         if audio_format not in SUPPORTED_FORMATS:
@@ -239,6 +246,10 @@ class Engine:
                 track_id = song.song_id or song.url
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
+        for song in songs:
+            # spotDL 4.5 writes ISRC unconditionally for MP3; Mutagen rejects None.
+            if song.isrc is None:
+                song.isrc = ""
 
         output, output_template = build_output_paths(
             output_dir,

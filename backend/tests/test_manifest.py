@@ -24,6 +24,9 @@ def test_loads_exportify_style_csv(tmp_path: Path) -> None:
     assert songs[0].duration == 185
     assert songs[0].url == "https://open.spotify.com/track/abc"
     assert songs[0].isrc == "US123"
+    assert songs[0].album_id == ""
+    assert songs[0].list_length == 1
+    assert songs[0].tracks_count == 1
 
 
 def test_loads_named_json_manifest(tmp_path: Path) -> None:
@@ -45,6 +48,7 @@ def test_loads_named_json_manifest(tmp_path: Path) -> None:
     assert name == "My imports"
     assert songs[0].album_name == "Album"
     assert songs[0].duration == 42
+    assert songs[0].isrc == ""
 
 
 def test_rejects_rows_without_required_metadata(tmp_path: Path) -> None:

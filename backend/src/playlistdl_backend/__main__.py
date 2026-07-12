@@ -15,6 +15,11 @@ _force_utf8(sys.stdin)
 _force_utf8(sys.stdout)
 _force_utf8(sys.stderr)
 
+if getattr(sys, "frozen", False):
+    from playlistdl_backend.frozen_transport import install_frozen_spotify_transport
+
+    install_frozen_spotify_transport()
+
 from playlistdl_backend.bridge import Bridge  # noqa: E402
 
 

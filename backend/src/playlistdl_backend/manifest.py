@@ -36,6 +36,10 @@ def load_manifest(path_value: str) -> tuple[str, list[Song]]:
     songs = [_song_from_row(row, index) for index, row in enumerate(rows, start=1)]
     if not songs:
         raise ValueError("Manifest contains no tracks")
+    for song in songs:
+        song.list_length = len(songs)
+        if not song.tracks_count:
+            song.tracks_count = len(songs)
     return name, songs
 
 
@@ -97,11 +101,14 @@ def _song_from_row(row_value: Any, position: int) -> Song:
         explicit=False,
         publisher="",
         url=spotify_url,
-        isrc=_value(row, "isrc") or None,
+        isrc=_value(row, "isrc"),
         cover_url=_value(row, "cover_url", "cover url", "artwork url") or None,
         copyright_text=None,
         list_name="",
         list_url=str(Path()),
         list_position=position,
         list_length=0,
+        album_id="",
+        artist_id="",
+        album_type="",
     )

@@ -37,6 +37,8 @@ jobs:
           "value=$version" >> $env:GITHUB_OUTPUT
       - name: Build standalone executable
         run: ./scripts/build-release.ps1 -Version '${{ steps.version.outputs.value }}'
+      - name: Smoke test frozen Spotify resolver
+        run: ./scripts/smoke-frozen-backend.ps1
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
