@@ -35,6 +35,7 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
         ("Failed to complete request. (ConnectTimeoutError)", "network"),
         ("LookupError: No results found for song", "no_match"),
         ("FFmpeg returned non-zero exit status", "convert_error"),
+        ("AudioProviderError: YT-DLP download error", "source_unavailable"),
         ("something entirely different", "unknown"),
         (None, "unknown"),
     ],
@@ -68,6 +69,7 @@ class _FakeDownloader:
 
     last_instance: _FakeDownloader | None = None
     script: dict[str, list[tuple[str | None, str | None]]] = {}
+    batches: list[list[str]] = []
 
     def __init__(self, settings: dict[str, Any]) -> None:
         self.settings = settings
@@ -77,6 +79,7 @@ class _FakeDownloader:
         _FakeDownloader.last_instance = self
 
     def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+        _FakeDownloader.batches.append([song.song_id for song in batch])
         results = []
         for song in batch:
             attempt = self.attempts.get(song.song_id, 0)
@@ -96,8 +99,10 @@ def download_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict[str, Any]:
     monkeypatch.setattr(engine_module, "Downloader", _FakeDownloader)
     monkeypatch.setattr(engine_module, "ProgressHandler", _FakeProgressHandler)
     monkeypatch.setattr(engine_module, "_RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(Engine, "search_sources", staticmethod(lambda *args, **kwargs: []))
     _FakeDownloader.script = {}
     _FakeDownloader.last_instance = None
+    _FakeDownloader.batches = []
     songs = [_fake_song("One", 1), _fake_song("Two", 2)]
     instance._songs["job"] = songs  # type: ignore[assignment]
     instance._names["job"] = "My Mix"
@@ -180,6 +185,119 @@ def test_download_blank_ytdlp_args_normalize_to_none(download_env: dict[str, Any
 
     assert _FakeDownloader.last_instance is not None
     assert _FakeDownloader.last_instance.settings["yt_dlp_args"] is None
+
+
+def test_download_uses_rolling_windows_larger_than_worker_count(
+    download_env: dict[str, Any],
+) -> None:
+    engine: Engine = download_env["engine"]
+    songs = [_fake_song(f"Song {index}", index) for index in range(1, 11)]
+    engine._songs["job"] = songs  # type: ignore[assignment]
+    _FakeDownloader.script = {song.song_id: [(f"/out/{song.song_id}.mp3", None)] for song in songs}
+
+    engine.download("job", download_env["out"], threads=2, retries=0)
+
+    assert [len(batch) for batch in _FakeDownloader.batches] == [8, 2]
+    assert _FakeDownloader.last_instance is not None
+    assert _FakeDownloader.last_instance.settings["threads"] == 2
+
+
+def test_download_tries_ranked_relevant_fallback_after_source_failure(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = download_env["engine"]
+    song = download_env["songs"][0]
+    engine._songs["job"] = [song]  # type: ignore[assignment]
+    _FakeDownloader.script = {
+        song.song_id: [
+            (None, "AudioProviderError: YT-DLP download error"),
+            ("/out/one.mp3", None),
+        ]
+    }
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda *args, **kwargs: [
+                {
+                    "url": "https://www.youtube.com/watch?v=fallback",
+                    "title": "Artist - One (Lyrics)",
+                    "artists": ["Artist"],
+                    "duration_seconds": 201,
+                    "result_type": "video",
+                    "duration_delta_seconds": 1,
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", download_env["out"], retries=0)
+
+    result = _last_completion(download_env["events"])["results"][0]
+    assert result["success"] is True
+    assert result["fallback_used"] is True
+    assert result["source_url"].endswith("fallback")
+    assert song.download_url.endswith("fallback")
+
+
+def test_download_rejects_irrelevant_fallback_candidate(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = download_env["engine"]
+    song = download_env["songs"][0]
+    engine._songs["job"] = [song]  # type: ignore[assignment]
+    _FakeDownloader.script = {
+        song.song_id: [(None, "No results found for song")],
+    }
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda *args, **kwargs: [
+                {
+                    "url": "https://www.youtube.com/watch?v=wrong",
+                    "title": "Completely Different Track",
+                    "artists": ["Someone Else"],
+                    "duration_seconds": 200,
+                    "result_type": "video",
+                    "duration_delta_seconds": 0,
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", download_env["out"], retries=0)
+
+    result = _last_completion(download_env["events"])["results"][0]
+    assert result["success"] is False
+    assert result.get("fallback_used") is not True
+    assert len(_FakeDownloader.batches) == 1
+
+
+def test_attribute_errors_matches_spotify_url_before_batch_leftover() -> None:
+    songs = [_fake_song("One", 1), _fake_song("Two", 2)]
+    results = {
+        song.song_id: {
+            "track_id": song.song_id,
+            "path": None,
+            "success": False,
+            "error": None,
+            "error_class": None,
+        }
+        for song in songs
+    }
+
+    Engine._attribute_errors(
+        songs,
+        [
+            f"{songs[1].url} - second failed",
+            f"{songs[0].url} - first failed",
+        ],
+        results,
+    )
+
+    assert "first failed" in results["id-1"]["error"]
+    assert "second failed" in results["id-2"]["error"]
 
 
 def test_diagnose_reports_endpoint_health() -> None:

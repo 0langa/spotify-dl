@@ -59,6 +59,7 @@ public static class SavedJobSnapshot
                 IsComplete = track.Status == "Done" || track.Progress >= 100,
                 OutputPath = track.OutputPath,
                 SourceOverride = track.SourceOverride,
+                LastError = track.ErrorText,
             }).ToList(),
         };
 }

@@ -789,9 +789,11 @@ public partial class MainWindow : Window
             {
                 track.IsSelected = saved.IsSelected && !saved.IsComplete;
                 track.Progress = saved.IsComplete ? 100 : 0;
-                track.Status = saved.IsComplete ? "Done" : "Ready";
+                track.Status = saved.IsComplete ? "Done" :
+                    string.IsNullOrWhiteSpace(saved.LastError) ? "Ready" : "Failed";
                 track.OutputPath = saved.OutputPath;
                 track.SourceOverride = saved.SourceOverride;
+                track.ErrorText = saved.IsComplete ? null : saved.LastError;
             }
             track.PropertyChanged += Track_PropertyChanged;
             resolvedTracks.Add(track);
@@ -801,7 +803,10 @@ public partial class MainWindow : Window
         PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
         FilterBox.Clear();
         _failedTracks.Clear();
-        RetryFailedButton.Visibility = Visibility.Collapsed;
+        _failedTracks.AddRange(Tracks.Where(track => track.HasError));
+        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
+        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
         HideFailureBanner();
         UpdateSelectionUi();
         var sourceLabel = SourceLabel();

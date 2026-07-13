@@ -76,9 +76,16 @@ public sealed class DownloadQueueTests
             Id = "pending",
             SpotifyUrl = "https://open.spotify.com/track/pending",
         };
+        var failed = new TrackItem
+        {
+            Id = "failed",
+            SpotifyUrl = "https://open.spotify.com/track/failed",
+            Status = "Failed",
+            ErrorText = "Age-restricted source",
+        };
         var job = Job("source") with
         {
-            AllTracks = [completed, pending],
+            AllTracks = [completed, pending, failed],
             Tracks = [completed],
         };
 
@@ -90,9 +97,10 @@ public sealed class DownloadQueueTests
             job.AllTracks);
 
         Assert.Equal(job.SourceUrl, saved.SourceUrl);
-        Assert.Equal(2, saved.Tracks.Count);
+        Assert.Equal(3, saved.Tracks.Count);
         Assert.True(saved.Tracks.Single(track => track.Id == "done").IsComplete);
         Assert.False(saved.Tracks.Single(track => track.Id == "pending").IsComplete);
+        Assert.Equal("Age-restricted source", saved.Tracks.Single(track => track.Id == "failed").LastError);
     }
 }
 

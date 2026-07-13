@@ -4,7 +4,12 @@ from typing import Any
 
 import pytest
 
-from playlistdl_backend.engine import Engine, _candidate_from_result, rank_candidates
+from playlistdl_backend.engine import (
+    Engine,
+    _candidate_from_result,
+    candidate_is_relevant,
+    rank_candidates,
+)
 
 
 class _FakeYtMusic:
@@ -84,3 +89,58 @@ def test_search_sources_merges_filters_and_dedupes() -> None:
 def test_search_sources_requires_query_text() -> None:
     with pytest.raises(ValueError, match="title or artist"):
         Engine.search_sources("", "", client=_FakeYtMusic({}))
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [
+        (
+            {
+                "title": "Alligatoah - Willst Du (Lyrics)",
+                "artists": ["Alligatoah"],
+                "duration_seconds": 218,
+            },
+            True,
+        ),
+        (
+            {
+                "title": "Nightcore Stamp On The Ground - Italobrothers",
+                "artists": [],
+                "duration_seconds": 157,
+            },
+            True,
+        ),
+        (
+            {
+                "title": "Completely Different Track",
+                "artists": ["Someone Else"],
+                "duration_seconds": 218,
+            },
+            False,
+        ),
+        (
+            {
+                "title": "Alligatoah - Willst Du",
+                "artists": ["Alligatoah"],
+                "duration_seconds": 360,
+            },
+            False,
+        ),
+    ],
+)
+def test_candidate_relevance_requires_identity_and_duration(
+    candidate: dict[str, Any], expected: bool
+) -> None:
+    assert (
+        candidate_is_relevant(
+            candidate,
+            title="Willst du"
+            if "Willst" in candidate["title"]
+            else "Stamp on the Ground - Nightcore & KYANU Edit",
+            artists=["Alligatoah"]
+            if "Willst" in candidate["title"]
+            else ["ItaloBrothers", "KYANU"],
+            duration_seconds=218 if "Willst" in candidate["title"] else 157,
+        )
+        is expected
+    )

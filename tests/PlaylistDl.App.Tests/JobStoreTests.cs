@@ -27,6 +27,7 @@ public sealed class JobStoreTests : IDisposable
                     SpotifyUrl = "https://open.spotify.com/track/one",
                     IsComplete = true,
                     OutputPath = @"C:\Music\song.mp3",
+                    LastError = "saved failure detail",
                 },
             ],
         });
@@ -38,6 +39,7 @@ public sealed class JobStoreTests : IDisposable
         Assert.Equal("import", restored.SourceType);
         Assert.True(restored.Tracks.Single().IsComplete);
         Assert.Equal(@"C:\Music\song.mp3", restored.Tracks.Single().OutputPath);
+        Assert.Equal("saved failure detail", restored.Tracks.Single().LastError);
     }
 
     [Fact]

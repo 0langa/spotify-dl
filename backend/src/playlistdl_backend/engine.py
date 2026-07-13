@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -77,9 +78,25 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "convert",
         ),
     ),
+    (
+        "source_unavailable",
+        (
+            "audioprovidererror: yt-dlp download error",
+            "video unavailable",
+            "this video is unavailable",
+            "private video",
+        ),
+    ),
 )
 
-_FAILURE_PRIORITY = ("youtube_blocked", "network", "no_match", "convert_error", "unknown")
+_FAILURE_PRIORITY = (
+    "youtube_blocked",
+    "network",
+    "no_match",
+    "source_unavailable",
+    "convert_error",
+    "unknown",
+)
 
 RETRYABLE_FAILURE_CLASSES = frozenset({"youtube_blocked", "network"})
 
@@ -94,8 +111,13 @@ FAILURE_HINTS = {
         "any antivirus/firewall rules for this app, then run a diagnosis."
     ),
     "no_match": (
-        "No matching YouTube source was found for some tracks. "
+        "No sufficiently close YouTube source was found for some tracks. "
         "Use the per-track Source button to pick an exact video."
+    ),
+    "source_unavailable": (
+        "The best source was unavailable and no safe alternate succeeded. "
+        "Retry, add YouTube cookies in Settings for age-restricted videos, "
+        "or use the per-track Source button."
     ),
     "convert_error": (
         "Audio conversion failed. Verify the bundled FFmpeg is intact "
@@ -106,6 +128,27 @@ FAILURE_HINTS = {
 
 
 _RETRY_BACKOFF_SECONDS = 8.0
+_FALLBACK_PAUSE_SECONDS = 0.5
+_FALLBACK_FAILURE_CLASSES = frozenset({"no_match", "source_unavailable"})
+_IDENTITY_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "audio",
+        "edit",
+        "feat",
+        "featuring",
+        "ft",
+        "lyrics",
+        "official",
+        "remaster",
+        "remastered",
+        "the",
+        "version",
+        "video",
+    }
+)
 
 _DIAGNOSE_ENDPOINTS = (
     "https://open.spotify.com/",
@@ -218,6 +261,7 @@ def rank_candidates(
         candidate["duration_delta_seconds"] = (
             duration - target_duration_seconds if target_duration_seconds and duration else None
         )
+
     def sort_key(candidate: dict[str, Any]) -> tuple[int, int]:
         delta = candidate.get("duration_delta_seconds")
         distance = abs(delta) if delta is not None else 10_000
@@ -225,6 +269,60 @@ def rank_candidates(
         return (distance, type_rank)
 
     return sorted(candidates, key=sort_key)
+
+
+def _identity_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[\w]+", value.casefold(), flags=re.UNICODE)
+        if len(token) > 1 and token not in _IDENTITY_STOPWORDS
+    }
+
+
+def _compact_identity(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def candidate_is_relevant(
+    candidate: dict[str, Any],
+    title: str,
+    artists: list[str],
+    duration_seconds: int,
+) -> bool:
+    """Reject fallback candidates unless duration and musical identity both agree."""
+    candidate_duration = int(candidate.get("duration_seconds") or 0)
+    if duration_seconds and candidate_duration:
+        tolerance = max(15, round(duration_seconds * 0.10))
+        if abs(candidate_duration - duration_seconds) > tolerance:
+            return False
+
+    target_title = _identity_tokens(title)
+    candidate_title_text = str(candidate.get("title") or "")
+    candidate_artist_text = " ".join(str(value) for value in candidate.get("artists") or [])
+    candidate_identity = _identity_tokens(f"{candidate_title_text} {candidate_artist_text}")
+    if not target_title:
+        return False
+    title_overlap = len(target_title & candidate_identity) / len(target_title)
+
+    candidate_compact = _compact_identity(f"{candidate_title_text} {candidate_artist_text}")
+    artist_match = any(
+        (compact := _compact_identity(artist))
+        and len(compact) >= 3
+        and compact in candidate_compact
+        for artist in artists
+    )
+    exact_title = _compact_identity(title) == _compact_identity(candidate_title_text)
+    return title_overlap >= 0.60 and (artist_match or exact_title or title_overlap >= 0.85)
+
+
+def _source_identity(url: str | None) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.hostname == "youtu.be":
+        return parsed.path.strip("/")
+    query = dict(part.split("=", 1) for part in parsed.query.split("&") if "=" in part)
+    return query.get("v", url)
 
 
 def classify_failure(error_text: str | None) -> str:
@@ -338,9 +436,7 @@ class Engine:
             tracks=tracks,
         )
 
-    def resolve_search(
-        self, query: str, limit: int = 12, client: Any | None = None
-    ) -> PlaylistDto:
+    def resolve_search(self, query: str, limit: int = 12, client: Any | None = None) -> PlaylistDto:
         """Resolve free text into downloadable tracks via YouTube Music.
 
         Spotify-independent by design: this path keeps working when the
@@ -596,6 +692,22 @@ class Engine:
                 self._emit({"type": "job_cancelled"})
                 return
 
+        fallback_pending = [
+            song
+            for song in songs
+            if (record := results_by_id.get(song.song_id or song.url)) is not None
+            and not record["success"]
+            and record["error_class"] in _FALLBACK_FAILURE_CLASSES
+        ]
+        for index, song in enumerate(fallback_pending):
+            if self._cancel.is_set():
+                self._emit({"type": "job_cancelled"})
+                return
+            if index and self._wait_cancellable(_FALLBACK_PAUSE_SECONDS):
+                self._emit({"type": "job_cancelled"})
+                return
+            self._try_source_fallback(downloader, song, results_by_id)
+
         downloader.progress_handler.close()
         results = [
             results_by_id[track_id]
@@ -627,7 +739,11 @@ class Engine:
         throttle_seconds: float,
     ) -> bool:
         """Download one pass over songs; returns True if cancelled."""
-        batch_size = max(1, min(threads, 4))
+        # Give spotDL's bounded worker pool enough queued work to keep every slot
+        # busy. Tiny worker-sized batches caused head-of-line stalls whenever one
+        # slow track held the next batch back.
+        worker_count = max(1, min(threads, 4))
+        batch_size = worker_count * 4
         for offset in range(0, len(songs), batch_size):
             if self._cancel.is_set():
                 return True
@@ -643,6 +759,8 @@ class Engine:
                     "success": path is not None,
                     "error": None,
                     "error_class": None,
+                    "source_url": getattr(resolved_song, "download_url", None),
+                    "fallback_used": False,
                 }
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
@@ -654,7 +772,7 @@ class Engine:
         new_errors: list[str],
         results_by_id: dict[str, dict[str, Any]],
     ) -> None:
-        """Match spotDL error strings to failed songs, by display name when possible."""
+        """Match spotDL error strings to failed songs without cross-track leakage."""
         failed = [
             record
             for song in batch
@@ -666,17 +784,85 @@ class Engine:
         for record in failed:
             song = songs_by_id[record["track_id"]]
             display_name = getattr(song, "display_name", None) or song.name
+            identities = [
+                str(record["track_id"]),
+                str(getattr(song, "url", "") or ""),
+                str(getattr(song, "download_url", "") or ""),
+                str(display_name or ""),
+            ]
             match = next(
-                (text for text in unmatched if display_name and display_name in text), None
+                (
+                    text
+                    for text in unmatched
+                    if any(identity and identity in text for identity in identities)
+                ),
+                None,
             )
             if match is not None:
                 unmatched.remove(match)
                 record["error"] = match
-        leftover = " | ".join(unmatched) if unmatched else None
         for record in failed:
-            if record["error"] is None and leftover:
-                record["error"] = leftover
+            if record["error"] is None and unmatched:
+                record["error"] = unmatched.pop(0)
             record["error_class"] = classify_failure(record["error"])
+
+    def _try_source_fallback(
+        self,
+        downloader: Downloader,
+        song: Song,
+        results_by_id: dict[str, dict[str, Any]],
+    ) -> None:
+        """Try up to three strong alternate sources, sequentially and conservatively."""
+        track_id = song.song_id or song.url
+        attempted = {_source_identity(getattr(song, "download_url", None))}
+        try:
+            candidates = self.search_sources(
+                song.name,
+                (song.artists or [getattr(song, "artist", "")])[0],
+                duration_seconds=song.duration,
+                limit=8,
+            )
+        except Exception:  # noqa: BLE001 - fallback must not abort the whole job
+            logger.exception("Alternate source search failed for %s", track_id)
+            return
+
+        relevant = [
+            candidate
+            for candidate in candidates
+            if _source_identity(str(candidate.get("url") or "")) not in attempted
+            and candidate_is_relevant(
+                candidate,
+                title=song.name,
+                artists=list(song.artists or []),
+                duration_seconds=song.duration,
+            )
+        ][:3]
+        for candidate in relevant:
+            if self._cancel.is_set():
+                return
+            source_url = str(candidate["url"])
+            attempted.add(_source_identity(source_url))
+            song.download_url = source_url
+            self._emit(
+                {
+                    "type": "track_progress",
+                    "track_id": track_id,
+                    "progress": 0,
+                    "status": "Trying alternate source",
+                }
+            )
+            self._run_attempt(
+                downloader,
+                [song],
+                results_by_id,
+                threads=1,
+                throttle_seconds=0,
+            )
+            record = results_by_id[track_id]
+            record["source_url"] = source_url
+            record["fallback_used"] = True
+            if record["success"]:
+                return
 
     def _wait_cancellable(self, seconds: float) -> bool:
         """Sleep in small slices; returns True if cancelled meanwhile."""

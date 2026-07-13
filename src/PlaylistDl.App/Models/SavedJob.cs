@@ -28,4 +28,6 @@ public sealed class SavedTrack
     public string? OutputPath { get; set; }
 
     public string? SourceOverride { get; set; }
+
+    public string? LastError { get; set; }
 }
