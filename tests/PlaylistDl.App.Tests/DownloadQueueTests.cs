@@ -81,6 +81,7 @@ public sealed class DownloadQueueTests
             Id = "failed",
             SpotifyUrl = "https://open.spotify.com/track/failed",
             Status = "Failed",
+            Progress = 100,
             ErrorText = "Age-restricted source",
         };
         var job = Job("source") with
@@ -100,6 +101,7 @@ public sealed class DownloadQueueTests
         Assert.Equal(3, saved.Tracks.Count);
         Assert.True(saved.Tracks.Single(track => track.Id == "done").IsComplete);
         Assert.False(saved.Tracks.Single(track => track.Id == "pending").IsComplete);
+        Assert.False(saved.Tracks.Single(track => track.Id == "failed").IsComplete);
         Assert.Equal("Age-restricted source", saved.Tracks.Single(track => track.Id == "failed").LastError);
     }
 }

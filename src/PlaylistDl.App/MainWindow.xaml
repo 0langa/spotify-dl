@@ -27,6 +27,8 @@
           <Button x:Name="ResumeButton" Content="Resume last job" Visibility="Collapsed"
                   Margin="0,0,10,0" Click="ResumeButton_Click" />
           <Button Content="Library" Width="90" Margin="0,0,10,0" Click="LibraryButton_Click" />
+          <Button Content="Run log" Width="90" Margin="0,0,10,0" Click="OpenRunLogButton_Click"
+                  ToolTip="Open exact provider errors and completed-track history for this app session" />
           <Button Content="Settings" Width="100" Click="SettingsButton_Click" />
         </StackPanel>
       </DockPanel>
@@ -86,7 +88,29 @@
                 IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column"
                 RowHeaderWidth="0" GridLinesVisibility="Horizontal" AlternatingRowBackground="#151820"
                 Background="#111318" Foreground="#E7EBF2" BorderBrush="#303642"
-                EnableRowVirtualization="True">
+                EnableRowVirtualization="True" RowDetailsVisibilityMode="VisibleWhenSelected">
+        <DataGrid.RowDetailsTemplate>
+          <DataTemplate>
+            <Border Padding="14,8" Background="#2C1D1D" BorderBrush="#8B3D3D" BorderThickness="0,1,0,1">
+              <Border.Style>
+                <Style TargetType="Border">
+                  <Setter Property="Visibility" Value="Collapsed" />
+                  <Style.Triggers>
+                    <DataTrigger Binding="{Binding HasError}" Value="True">
+                      <Setter Property="Visibility" Value="Visible" />
+                    </DataTrigger>
+                  </Style.Triggers>
+                </Style>
+              </Border.Style>
+              <StackPanel>
+                <TextBlock Text="Exact failure — select text to copy" Foreground="#FFB7B7" FontWeight="SemiBold" />
+                <TextBox Text="{Binding ErrorText}" IsReadOnly="True" TextWrapping="Wrap"
+                         Background="Transparent" BorderThickness="0" Padding="0" Margin="0,4,0,0"
+                         Foreground="#FFDADA" />
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </DataGrid.RowDetailsTemplate>
         <DataGrid.Columns>
           <DataGridTemplateColumn Width="36">
             <DataGridTemplateColumn.CellTemplate>

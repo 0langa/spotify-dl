@@ -13,6 +13,23 @@ public sealed record JobFailureSummary(string? FailureClass, string? FailureHint
 
 public static class JobResults
 {
+    public static DownloadResult? ParseSingle(JsonElement item)
+    {
+        var trackId = ReadString(item, "track_id");
+        if (string.IsNullOrEmpty(trackId))
+        {
+            return null;
+        }
+        var success = item.TryGetProperty("success", out var successElement) &&
+            successElement.ValueKind == JsonValueKind.True;
+        return new DownloadResult(
+            trackId,
+            ReadString(item, "path"),
+            success,
+            ReadString(item, "error"),
+            ReadString(item, "error_class"));
+    }
+
     public static IReadOnlyList<DownloadResult> Parse(JsonElement message)
     {
         if (!message.TryGetProperty("results", out var results) ||
@@ -24,20 +41,12 @@ public static class JobResults
         var parsed = new List<DownloadResult>();
         foreach (var item in results.EnumerateArray())
         {
-            var trackId = ReadString(item, "track_id");
-            if (string.IsNullOrEmpty(trackId))
+            var result = ParseSingle(item);
+            if (result is null)
             {
                 continue;
             }
-
-            var success = item.TryGetProperty("success", out var successElement) &&
-                successElement.ValueKind == JsonValueKind.True;
-            parsed.Add(new DownloadResult(
-                trackId,
-                ReadString(item, "path"),
-                success,
-                ReadString(item, "error"),
-                ReadString(item, "error_class")));
+            parsed.Add(result);
         }
 
         return parsed;

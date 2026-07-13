@@ -4,9 +4,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from spotdl.types.song import Song
 
 from playlistdl_backend import engine as engine_module
-from playlistdl_backend.engine import Engine
+from playlistdl_backend.engine import Engine, reinitialize_song_resilient
 
 
 def _fake_song(name: str, position: int) -> SimpleNamespace:
@@ -23,6 +24,12 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
         isrc=None,
         display_name=f"Artist - {name}",
         download_url=None,
+        genres=None,
+        disc_count=None,
+        tracks_count=None,
+        track_number=position,
+        album_id=None,
+        album_artist=None,
     )
 
 
@@ -33,6 +40,7 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
         ("HTTP Error 429: Too Many Requests", "youtube_blocked"),
         ("Max retries exceeded with url: /", "network"),
         ("Failed to complete request. (ConnectTimeoutError)", "network"),
+        ("Error occurred while reinitializing song: Could not get session", "metadata_session"),
         ("LookupError: No results found for song", "no_match"),
         ("FFmpeg returned non-zero exit status", "convert_error"),
         ("AudioProviderError: YT-DLP download error", "source_unavailable"),
@@ -200,6 +208,151 @@ def test_download_uses_rolling_windows_larger_than_worker_count(
     assert [len(batch) for batch in _FakeDownloader.batches] == [8, 2]
     assert _FakeDownloader.last_instance is not None
     assert _FakeDownloader.last_instance.settings["threads"] == 2
+
+
+def test_resilient_reinitialization_uses_single_track_payload_and_retries() -> None:
+    song = Song.from_missing_data(
+        name="One",
+        artists=["Artist"],
+        artist="Artist",
+        duration=200,
+        url="https://open.spotify.com/track/id-1",
+        song_id="id-1",
+        list_position=4,
+    )
+    raw = {
+        "name": "One",
+        "id": "id-1",
+        "duration_ms": 201000,
+        "disc_number": 1,
+        "track_number": 2,
+        "explicit": False,
+        "external_urls": {"spotify": song.url},
+        "external_ids": {"isrc": "TEST123"},
+        "artists": [{"name": "Artist", "id": "artist-1", "genres": ["rock"]}],
+        "album": {
+            "id": "album-1",
+            "name": "Correct Album",
+            "artists": [{"name": "Artist"}],
+            "album_type": "album",
+            "release_date": "2025-02-03",
+            "total_tracks": 12,
+            "images": [
+                {"url": "small", "width": 64, "height": 64},
+                {"url": "cover", "width": 640, "height": 640},
+            ],
+            "copyrights": [{"text": "2025 Label"}],
+            "label": "Label",
+        },
+    }
+
+    class Client:
+        calls = 0
+
+        def track(self, url: str) -> dict[str, Any]:
+            assert url == song.url
+            self.calls += 1
+            if self.calls < 3:
+                raise RuntimeError("Could not get session")
+            return raw
+
+    client = Client()
+    waits: list[float] = []
+    hydrated = reinitialize_song_resilient(song, client, attempts=3, sleeper=waits.append)
+
+    assert hydrated is song
+    assert client.calls == 3
+    assert waits == [1.5, 3.0]
+    assert hydrated.album_name == "Correct Album"
+    assert hydrated.album_artist == "Artist"
+    assert hydrated.cover_url == "cover"
+    assert hydrated.genres == ["rock"]
+    assert hydrated.tracks_count == 12
+    assert hydrated.date == "2025-02-03"
+    assert hydrated.publisher == "Label"
+    assert hydrated.list_position == 4
+
+
+def test_failed_track_recovers_before_next_large_playlist_window(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = download_env["engine"]
+    songs = [_fake_song(f"Song {index}", index) for index in range(1, 11)]
+    engine._songs["job"] = songs  # type: ignore[assignment]
+    _FakeDownloader.script = {
+        song.song_id: (
+            [(None, "No results found for song"), (f"/out/{song.song_id}.mp3", None)]
+            if song.song_id == "id-1"
+            else [(f"/out/{song.song_id}.mp3", None)]
+        )
+        for song in songs
+    }
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda title, *args, **kwargs: [
+                {
+                    "url": "https://www.youtube.com/watch?v=fallback",
+                    "title": f"Artist - {title}",
+                    "artists": ["Artist"],
+                    "duration_seconds": 200,
+                    "result_type": "video",
+                    "duration_delta_seconds": 0,
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", download_env["out"], threads=2, retries=0)
+
+    assert _FakeDownloader.batches[0] == [f"id-{index}" for index in range(1, 9)]
+    assert _FakeDownloader.batches[1] == ["id-1"]
+    assert _FakeDownloader.batches[2] == ["id-9", "id-10"]
+    result_events = [event for event in download_env["events"] if event["type"] == "track_result"]
+    assert len(result_events) == 10
+    assert result_events[0]["track_id"] == "id-1"
+    assert result_events[0]["success"] is True
+
+
+def test_progress_events_deduplicate_identical_provider_callbacks() -> None:
+    events: list[dict[str, Any]] = []
+    engine = Engine(events.append)
+    tracker = SimpleNamespace(song=_fake_song("One", 1), progress=50, path=None)
+
+    engine._on_progress(tracker, "Downloading")
+    engine._on_progress(tracker, "Downloading")
+    engine._on_progress(tracker, "Converting")
+
+    assert [event["status"] for event in events] == ["Downloading", "Converting"]
+
+
+def test_batch_exception_isolated_and_later_window_continues(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RaisingDownloader(_FakeDownloader):
+        calls = 0
+
+        def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+            RaisingDownloader.calls += 1
+            if RaisingDownloader.calls == 1:
+                raise RuntimeError("provider pool crashed")
+            return super().download_multiple_songs(batch)
+
+    monkeypatch.setattr(engine_module, "Downloader", RaisingDownloader)
+    engine: Engine = download_env["engine"]
+    songs = [_fake_song(f"Song {index}", index) for index in range(1, 11)]
+    engine._songs["job"] = songs  # type: ignore[assignment]
+    _FakeDownloader.script = {song.song_id: [(f"/out/{song.song_id}.mp3", None)] for song in songs}
+
+    engine.download("job", download_env["out"], threads=2, retries=0)
+
+    completion = _last_completion(download_env["events"])
+    by_id = {result["track_id"]: result for result in completion["results"]}
+    assert by_id["id-1"]["success"] is False
+    assert "provider pool crashed" in by_id["id-1"]["error"]
+    assert by_id["id-9"]["success"] is True
+    assert by_id["id-10"]["success"] is True
 
 
 def test_download_tries_ranked_relevant_fallback_after_source_failure(

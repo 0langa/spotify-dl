@@ -11,12 +11,16 @@ public sealed class BackendClient : IAsyncDisposable
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string, TaskCompletionSource<JsonElement>> _pending = [];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly RunLog _runLog;
     private Process? _process;
 
-    public BackendClient(Func<string?>? configuredBackendPath = null)
+    public BackendClient(Func<string?>? configuredBackendPath = null, RunLog? runLog = null)
     {
         _configuredBackendPath = configuredBackendPath ?? (() => null);
+        _runLog = runLog ?? new RunLog();
     }
+
+    public string LogPath => _runLog.Path;
 
     public event EventHandler<JsonElement>? EventReceived;
     public event EventHandler<string>? DiagnosticReceived;
@@ -29,6 +33,7 @@ public sealed class BackendClient : IAsyncDisposable
         }
 
         var startInfo = CreateStartInfo();
+        _runLog.Write("app", $"Starting backend: {startInfo.FileName}");
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         if (!_process.Start())
         {
@@ -132,6 +137,7 @@ public sealed class BackendClient : IAsyncDisposable
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement.Clone();
+            LogEvent(root, line);
             if (root.TryGetProperty("request_id", out var requestIdElement))
             {
                 var requestId = requestIdElement.GetString();
@@ -168,9 +174,39 @@ public sealed class BackendClient : IAsyncDisposable
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
+            _runLog.Write("backend", line);
             DiagnosticReceived?.Invoke(this, line);
         }
     }
+
+    private void LogEvent(JsonElement root, string rawLine)
+    {
+        var type = root.TryGetProperty("type", out var typeElement)
+            ? typeElement.GetString()
+            : null;
+        if (type == "track_progress")
+        {
+            return;
+        }
+        if (type == "track_result")
+        {
+            var trackId = ReadString(root, "track_id") ?? "unknown";
+            var success = root.TryGetProperty("success", out var successElement) &&
+                successElement.ValueKind == JsonValueKind.True;
+            var errorClass = ReadString(root, "error_class") ?? "unknown";
+            var detail = success
+                ? ReadString(root, "path") ?? "saved"
+                : ReadString(root, "error") ?? "No provider detail";
+            _runLog.Write("track", $"{(success ? "DONE" : "FAILED")} {trackId} [{errorClass}] {detail}");
+            return;
+        }
+        _runLog.Write("event", rawLine);
+    }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private ProcessStartInfo CreateStartInfo()
     {

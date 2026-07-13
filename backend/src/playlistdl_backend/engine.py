@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import spotdl.download.downloader as spotdl_downloader_module
 from spotdl.download.downloader import Downloader
 from spotdl.download.progress_handler import ProgressHandler, SongTracker
 from spotdl.types.album import Album
@@ -63,6 +64,13 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "metadata_session",
+        (
+            "could not get session",
+            "reinitializing song",
+        ),
+    ),
+    (
         "no_match",
         (
             "no results found",
@@ -92,6 +100,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _FAILURE_PRIORITY = (
     "youtube_blocked",
     "network",
+    "metadata_session",
     "no_match",
     "source_unavailable",
     "convert_error",
@@ -109,6 +118,10 @@ FAILURE_HINTS = {
     "network": (
         "The downloader could not reach the network. Check connectivity and "
         "any antivirus/firewall rules for this app, then run a diagnosis."
+    ),
+    "metadata_session": (
+        "Spotify metadata session expired while preparing a track. "
+        "Progress was saved; resume the job to retry unfinished tracks."
     ),
     "no_match": (
         "No sufficiently close YouTube source was found for some tracks. "
@@ -129,6 +142,7 @@ FAILURE_HINTS = {
 
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
+_METADATA_RETRY_SECONDS = 1.5
 _FALLBACK_FAILURE_CLASSES = frozenset({"no_match", "source_unavailable"})
 _IDENTITY_STOPWORDS = frozenset(
     {
@@ -366,6 +380,160 @@ def effective_bitrate(audio_format: str, bitrate: str | None) -> str | None:
     return None
 
 
+def normalize_song_for_download(song: Song) -> None:
+    """Make non-Spotify/search songs safe for matching and metadata embedding."""
+    if getattr(song, "genres", None) is None:
+        song.genres = []
+    if getattr(song, "disc_number", None) is None:
+        song.disc_number = 1
+    if getattr(song, "disc_count", None) is None:
+        song.disc_count = 1
+    if getattr(song, "tracks_count", None) is None:
+        song.tracks_count = 0
+    if getattr(song, "track_number", None) is None:
+        song.track_number = getattr(song, "list_position", None) or 0
+    if getattr(song, "album_id", None) is None:
+        song.album_id = ""
+    if getattr(song, "album_name", None) is None:
+        song.album_name = ""
+    if getattr(song, "album_artist", None) is None:
+        song.album_artist = song.artist or (song.artists[0] if song.artists else "")
+    if getattr(song, "publisher", None) is None:
+        song.publisher = ""
+    if getattr(song, "date", None) is None:
+        song.date = ""
+    if getattr(song, "year", None) is None:
+        song.year = 0
+    # spotDL 4.5 writes ISRC unconditionally for MP3; Mutagen rejects None.
+    if getattr(song, "isrc", None) is None:
+        song.isrc = ""
+
+
+def _is_spotify_track(song: Song) -> bool:
+    url = str(getattr(song, "url", "") or "")
+    parsed = urlparse(url)
+    return bool(
+        parsed.hostname
+        and (parsed.hostname == "spotify.com" or parsed.hostname.endswith(".spotify.com"))
+        and "/track/" in parsed.path
+    )
+
+
+def _largest_image_url(images: list[dict[str, Any]]) -> str | None:
+    if not images:
+        return None
+    largest = max(
+        images,
+        key=lambda image: (image.get("width") or 0) * (image.get("height") or 0),
+    )
+    return largest.get("url")
+
+
+def reinitialize_song_resilient(
+    song: Song,
+    client: Any | None = None,
+    attempts: int = 3,
+    sleeper: Callable[[float], None] | None = None,
+) -> Song:
+    """Enrich one Spotify song with one resilient request instead of spotDL's three.
+
+    SpotipyFree's track response already contains the album, artist, date and cover
+    information. spotDL normally discards that nested data and then makes separate
+    track, album and artist calls. Large jobs eventually exhausted the provider's
+    anonymous session and stopped with ``Could not get session``.
+    """
+    if not _is_spotify_track(song):
+        normalize_song_for_download(song)
+        return song
+
+    spotify = client or SpotifyClient()
+    wait = sleeper or time.sleep
+    last_error: Exception | None = None
+    raw_track: dict[str, Any] | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            raw_track = spotify.track(song.url)
+            if not isinstance(raw_track, dict) or not raw_track.get("name"):
+                raise ValueError("Spotify returned incomplete track metadata")
+            break
+        except Exception as exc:  # noqa: BLE001 - anonymous provider variance
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                wait(_METADATA_RETRY_SECONDS * (attempt + 1))
+    if raw_track is None:
+        raise RuntimeError(
+            f"Spotify metadata refresh failed after {max(1, attempts)} attempts: {last_error}"
+        ) from last_error
+
+    album = raw_track.get("album") or {}
+    artists_meta = raw_track.get("artists") or []
+    artist_names = [str(artist.get("name")) for artist in artists_meta if artist.get("name")]
+    album_artists = [
+        str(artist.get("name")) for artist in (album.get("artists") or []) if artist.get("name")
+    ]
+    genres = [
+        str(genre)
+        for genre in [
+            *(album.get("genres") or []),
+            *(genre for artist in artists_meta for genre in (artist.get("genres") or [])),
+        ]
+        if genre
+    ]
+    release_date = str(album.get("release_date") or "")
+    copyrights = album.get("copyrights") or []
+    copyright_text = next(
+        (str(item.get("text")) for item in copyrights if item.get("text")), None
+    )
+    data = song.json
+    enriched = {
+        "name": raw_track.get("name"),
+        "artists": artist_names or None,
+        "artist": artist_names[0] if artist_names else None,
+        "artist_id": artists_meta[0].get("id") if artists_meta else None,
+        "genres": genres,
+        "disc_number": raw_track.get("disc_number") or 1,
+        "disc_count": 1,
+        "album_id": album.get("id"),
+        "album_name": album.get("name"),
+        "album_artist": (
+            album_artists[0] if album_artists else (artist_names[0] if artist_names else None)
+        ),
+        "album_type": album.get("album_type"),
+        "duration": int((raw_track.get("duration_ms") or 0) / 1000) or None,
+        "year": (
+            int(release_date[:4])
+            if len(release_date) >= 4 and release_date[:4].isdigit()
+            else 0
+        ),
+        "date": release_date,
+        "track_number": raw_track.get("track_number") or 1,
+        "tracks_count": album.get("total_tracks") or 0,
+        "song_id": raw_track.get("id") or raw_track.get("track_id"),
+        "explicit": raw_track.get("explicit"),
+        "publisher": album.get("label") or album.get("courtesyLine") or "",
+        "url": (raw_track.get("external_urls") or {}).get("spotify"),
+        "isrc": (raw_track.get("external_ids") or {}).get("isrc") or "",
+        "cover_url": _largest_image_url(album.get("images") or []),
+        "copyright_text": copyright_text,
+        "popularity": raw_track.get("popularity"),
+    }
+    for key, value in enriched.items():
+        if data.get(key) is None and value is not None:
+            data[key] = value
+    # Keep identity stable: fallback attempts receive original playlist object.
+    # Mutating it prevents another metadata request after source-search failure.
+    for key, value in data.items():
+        setattr(song, key, value)
+    normalize_song_for_download(song)
+    return song
+
+
+# Downloader.search_and_download resolves this module global at runtime. Installing
+# the resilient implementation once keeps spotDL's download pipeline intact while
+# removing its redundant album/artist calls.
+spotdl_downloader_module.reinit_song = reinitialize_song_resilient
+
+
 def build_output_paths(
     output_dir: str,
     collection_name: str,
@@ -405,6 +573,7 @@ class Engine:
         self._songs: dict[str, list[Song]] = {}
         self._names: dict[str, str] = {}
         self._cancel = threading.Event()
+        self._progress_state: dict[str, tuple[int, str, str | None]] = {}
 
     def _ensure_spotify(self) -> None:
         if self._spotify_initialized:
@@ -634,9 +803,8 @@ class Engine:
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
         for song in songs:
-            # spotDL 4.5 writes ISRC unconditionally for MP3; Mutagen rejects None.
-            if song.isrc is None:
-                song.isrc = ""
+            if not _is_spotify_track(song):
+                normalize_song_for_download(song)
 
         output, output_template = build_output_paths(
             output_dir,
@@ -646,6 +814,7 @@ class Engine:
         )
         output.mkdir(parents=True, exist_ok=True)
         self._cancel.clear()
+        self._progress_state.clear()
 
         settings: dict[str, Any] = {
             "audio_providers": ["youtube-music", "youtube"],
@@ -671,42 +840,53 @@ class Engine:
         downloader.progress_handler.set_songs(songs)
 
         results_by_id: dict[str, dict[str, Any]] = {}
-        pending = list(songs)
-        for attempt in range(max(0, retries) + 1):
-            cancelled = self._run_attempt(
-                downloader, pending, results_by_id, threads, throttle_seconds
-            )
-            if cancelled:
-                self._emit({"type": "job_cancelled"})
+        started = time.monotonic()
+        worker_count = max(1, min(threads, 4))
+        window_size = worker_count * 4
+        for offset in range(0, len(songs), window_size):
+            if self._cancel.is_set():
+                self._emit_cancelled(results_by_id, songs)
                 return
-            pending = [
-                song
-                for song in pending
-                if (record := results_by_id.get(song.song_id or song.url)) is not None
-                and not record["success"]
-                and record["error_class"] in RETRYABLE_FAILURE_CLASSES
-            ]
-            if not pending or attempt >= max(0, retries):
-                break
-            if self._wait_cancellable(_RETRY_BACKOFF_SECONDS * (attempt + 1)):
-                self._emit({"type": "job_cancelled"})
+            if offset and throttle_seconds > 0 and self._wait_cancellable(throttle_seconds):
+                self._emit_cancelled(results_by_id, songs)
                 return
 
-        fallback_pending = [
-            song
-            for song in songs
-            if (record := results_by_id.get(song.song_id or song.url)) is not None
-            and not record["success"]
-            and record["error_class"] in _FALLBACK_FAILURE_CLASSES
-        ]
-        for index, song in enumerate(fallback_pending):
-            if self._cancel.is_set():
-                self._emit({"type": "job_cancelled"})
-                return
-            if index and self._wait_cancellable(_FALLBACK_PAUSE_SECONDS):
-                self._emit({"type": "job_cancelled"})
-                return
-            self._try_source_fallback(downloader, song, results_by_id)
+            window = songs[offset : offset + window_size]
+            pending = list(window)
+            for attempt in range(max(0, retries) + 1):
+                if self._run_attempt(downloader, pending, results_by_id, threads, 0):
+                    self._emit_cancelled(results_by_id, songs)
+                    return
+                pending = [
+                    song
+                    for song in pending
+                    if (record := results_by_id.get(song.song_id or song.url)) is not None
+                    and not record["success"]
+                    and record["error_class"] in RETRYABLE_FAILURE_CLASSES
+                ]
+                if not pending or attempt >= max(0, retries):
+                    break
+                if self._wait_cancellable(_RETRY_BACKOFF_SECONDS * (attempt + 1)):
+                    self._emit_cancelled(results_by_id, songs)
+                    return
+
+            fallback_pending = [
+                song
+                for song in window
+                if (record := results_by_id.get(song.song_id or song.url)) is not None
+                and not record["success"]
+                and record["error_class"] in _FALLBACK_FAILURE_CLASSES
+            ]
+            for index, song in enumerate(fallback_pending):
+                if self._cancel.is_set():
+                    self._emit_cancelled(results_by_id, songs)
+                    return
+                if index and self._wait_cancellable(_FALLBACK_PAUSE_SECONDS):
+                    self._emit_cancelled(results_by_id, songs)
+                    return
+                self._try_source_fallback(downloader, song, results_by_id)
+
+            self._emit_window_results(window, songs, results_by_id, started)
 
         downloader.progress_handler.close()
         results = [
@@ -751,20 +931,76 @@ class Engine:
                 return True
             batch = songs[offset : offset + batch_size]
             errors_before = len(downloader.errors)
-            for resolved_song, path in downloader.download_multiple_songs(batch):
+            try:
+                downloaded = downloader.download_multiple_songs(batch)
+            except Exception as exc:  # noqa: BLE001 - isolate provider batch failures
+                logger.exception("Downloader batch failed; continuing with later tracks")
+                error = f"{exc.__class__.__name__}: {exc}"
+                for song in batch:
+                    track_id = song.song_id or song.url
+                    results_by_id[track_id] = self._result_record(song, None, error)
+                continue
+            for resolved_song, path in downloaded:
                 track_id = resolved_song.song_id or resolved_song.url
-                results_by_id[track_id] = {
-                    "track_id": track_id,
-                    "path": str(path) if path else None,
-                    "success": path is not None,
-                    "error": None,
-                    "error_class": None,
-                    "source_url": getattr(resolved_song, "download_url", None),
-                    "fallback_used": False,
-                }
+                results_by_id[track_id] = self._result_record(resolved_song, path)
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
         return False
+
+    @staticmethod
+    def _result_record(
+        song: Song, path: Path | str | None, error: str | None = None
+    ) -> dict[str, Any]:
+        track_id = song.song_id or song.url
+        return {
+            "track_id": track_id,
+            "path": str(path) if path else None,
+            "success": path is not None,
+            "error": error,
+            "error_class": None if path else classify_failure(error),
+            "source_url": getattr(song, "download_url", None),
+            "fallback_used": False,
+        }
+
+    def _emit_window_results(
+        self,
+        window: list[Song],
+        all_songs: list[Song],
+        results_by_id: dict[str, dict[str, Any]],
+        started: float,
+    ) -> None:
+        for song in window:
+            record = results_by_id.get(song.song_id or song.url)
+            if record is not None:
+                self._emit({"type": "track_result", **record})
+        processed = len(results_by_id)
+        succeeded = sum(record["success"] for record in results_by_id.values())
+        elapsed = max(0.001, time.monotonic() - started)
+        rate = processed / elapsed * 60
+        remaining = max(0, len(all_songs) - processed)
+        self._emit(
+            {
+                "type": "job_progress",
+                "processed": processed,
+                "total": len(all_songs),
+                "succeeded": succeeded,
+                "failed": processed - succeeded,
+                "tracks_per_minute": round(rate, 2),
+                "eta_seconds": round(remaining / rate * 60) if rate > 0 else None,
+            }
+        )
+
+    def _emit_cancelled(
+        self,
+        results_by_id: dict[str, dict[str, Any]],
+        songs: list[Song],
+    ) -> None:
+        results = [
+            results_by_id[track_id]
+            for song in songs
+            if (track_id := song.song_id or song.url) in results_by_id
+        ]
+        self._emit({"type": "job_cancelled", "results": results})
 
     @staticmethod
     def _attribute_errors(
@@ -921,10 +1157,15 @@ class Engine:
             return None
 
     def _on_progress(self, tracker: SongTracker, message: str) -> None:
+        track_id = tracker.song.song_id or tracker.song.url
+        state = (int(tracker.progress), message, tracker.path)
+        if self._progress_state.get(track_id) == state:
+            return
+        self._progress_state[track_id] = state
         self._emit(
             {
                 "type": "track_progress",
-                "track_id": tracker.song.song_id or tracker.song.url,
+                "track_id": track_id,
                 "progress": int(tracker.progress),
                 "status": message,
                 "path": tracker.path,

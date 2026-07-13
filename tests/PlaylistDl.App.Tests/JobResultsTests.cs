@@ -73,6 +73,23 @@ public sealed class JobResultsTests
     }
 
     [Fact]
+    public void ParsesLiveTrackResult()
+    {
+        var message = Parse("""
+            {"type": "track_result", "track_id": "a", "path": null,
+             "success": false, "error": "Could not get session",
+             "error_class": "metadata_session"}
+            """);
+
+        var result = JobResults.ParseSingle(message);
+
+        Assert.NotNull(result);
+        Assert.Equal("a", result.TrackId);
+        Assert.Equal("Could not get session", result.Error);
+        Assert.Equal("metadata_session", result.ErrorClass);
+    }
+
+    [Fact]
     public void ParseFailureReadsJobLevelClassAndHint()
     {
         var message = Parse("""

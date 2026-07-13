@@ -56,7 +56,8 @@ public static class SavedJobSnapshot
                 Id = track.Id,
                 SpotifyUrl = track.SpotifyUrl,
                 IsSelected = track.IsSelected,
-                IsComplete = track.Status == "Done" || track.Progress >= 100,
+                // A failed attempt is processed (Progress=100) but must remain resumable.
+                IsComplete = track.Status == "Done",
                 OutputPath = track.OutputPath,
                 SourceOverride = track.SourceOverride,
                 LastError = track.ErrorText,

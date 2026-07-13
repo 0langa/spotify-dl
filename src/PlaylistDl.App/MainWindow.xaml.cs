@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
     private UpdateResult? _availableUpdate;
+    private string? _jobProgressText;
 
     public RangeObservableCollection<TrackItem> Tracks { get; } = [];
 
@@ -49,7 +50,13 @@ public partial class MainWindow : Window
         _tracksView = CollectionViewSource.GetDefaultView(Tracks);
         _tracksView.Filter = TrackPassesFilter;
         _backend.EventReceived += Backend_EventReceived;
-        _backend.DiagnosticReceived += (_, message) => Dispatcher.Invoke(() => StatusText.Text = message);
+        _backend.DiagnosticReceived += (_, _) => Dispatcher.Invoke(() =>
+        {
+            if (!_jobRunning)
+            {
+                StatusText.Text = "Backend warning — open Run log for exact details";
+            }
+        });
         _uiReady = true;
         _savedJob = _jobStore.Load();
         _library.MigrateFromLastJob(_savedJob);
@@ -330,6 +337,7 @@ public partial class MainWindow : Window
         _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
         RetryFailedButton.Visibility = Visibility.Collapsed;
         _jobRunning = true;
+        _jobProgressText = null;
         AnalyzeButton.IsEnabled = false;
         DownloadButton.IsEnabled = false;
         CancelButton.IsEnabled = true;
@@ -422,6 +430,25 @@ public partial class MainWindow : Window
             FileName = directory,
             UseShellExecute = true,
         });
+    }
+
+    private void OpenRunLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "notepad.exe",
+                UseShellExecute = true,
+            };
+            startInfo.ArgumentList.Add(_backend.LogPath);
+            System.Diagnostics.Process.Start(startInfo);
+        }
+        catch (Exception exception) when (
+            exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            StatusText.Text = $"Could not open Run log. File: {_backend.LogPath}";
+        }
     }
 
     private async void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -521,17 +548,41 @@ public partial class MainWindow : Window
                     {
                         track.OutputPath = path.GetString();
                     }
-                    if (track.Progress >= 100)
-                    {
-                        SaveCurrentJob();
-                    }
                 }
 
                 UpdateOverallProgress();
             }
+            else if (type == "track_result")
+            {
+                var result = JobResults.ParseSingle(message);
+                if (result is not null)
+                {
+                    ApplyLiveTrackResult(result);
+                }
+            }
+            else if (type == "job_progress")
+            {
+                var processed = message.GetProperty("processed").GetInt32();
+                var total = message.GetProperty("total").GetInt32();
+                var succeeded = message.GetProperty("succeeded").GetInt32();
+                var failed = message.GetProperty("failed").GetInt32();
+                var rate = message.GetProperty("tracks_per_minute").GetDouble();
+                var eta = message.TryGetProperty("eta_seconds", out var etaElement) &&
+                    etaElement.ValueKind == JsonValueKind.Number
+                    ? etaElement.GetInt32()
+                    : 0;
+                OverallProgress.Value = total == 0 ? 0 : processed * 100d / total;
+                _jobProgressText = $"{processed}/{total} processed · {succeeded} saved · {failed} failed · " +
+                    $"{rate:F1} tracks/min · ETA {FormatDuration(eta)}";
+                StatusText.Text = _jobProgressText;
+                // One durable checkpoint per completed rolling window avoids rewriting
+                // the full large-playlist snapshot for every provider callback.
+                SaveCurrentJob();
+            }
             else if (type is "job_completed" or "job_cancelled")
             {
                 _jobRunning = false;
+                _jobProgressText = null;
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
@@ -556,6 +607,10 @@ public partial class MainWindow : Window
                 }
                 else
                 {
+                    foreach (var result in JobResults.Parse(message))
+                    {
+                        ApplyLiveTrackResult(result);
+                    }
                     _queueRunning = false;
                     _queue.Clear();
                     UpdateQueueUi();
@@ -568,13 +623,14 @@ public partial class MainWindow : Window
             else if (type == "error" && _jobRunning)
             {
                 _jobRunning = false;
+                _jobProgressText = null;
                 _queueRunning = false;
                 _queue.Clear();
                 UpdateQueueUi();
                 AnalyzeButton.IsEnabled = true;
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
-                StatusText.Text = message.GetProperty("message").GetString() ?? "Download failed";
+                StatusText.Text = "Download stopped — progress saved. Open Run log for exact details.";
                 SaveCurrentJob();
                 _activeQueuedJob = null;
             }
@@ -646,6 +702,47 @@ public partial class MainWindow : Window
 
         StatusText.Text = summary;
         SaveCurrentJob();
+    }
+
+    private void ApplyLiveTrackResult(DownloadResult result)
+    {
+        var track = FindTrack(result.TrackId);
+        if (track is null)
+        {
+            return;
+        }
+        track.Progress = 100;
+        if (result.Success)
+        {
+            track.Status = "Done";
+            track.OutputPath = result.Path;
+            track.ErrorText = null;
+            _failedTracks.Remove(track);
+        }
+        else
+        {
+            track.Status = "Failed";
+            track.ErrorText = result.Error ?? "Provider returned no error detail. See Run log.";
+            if (!_failedTracks.Contains(track))
+            {
+                _failedTracks.Add(track);
+            }
+        }
+        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
+        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+    }
+
+    private static string FormatDuration(int seconds)
+    {
+        if (seconds <= 0)
+        {
+            return "calculating";
+        }
+        var duration = TimeSpan.FromSeconds(seconds);
+        return duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours}h {duration.Minutes}m"
+            : $"{Math.Max(1, duration.Minutes)}m";
     }
 
     private TrackItem? FindTrack(string trackId) =>
@@ -731,6 +828,11 @@ public partial class MainWindow : Window
         }
 
         OverallProgress.Value = jobTracks.Count == 0 ? 0 : jobTracks.Average(track => track.Progress);
+        if (_jobProgressText is not null)
+        {
+            StatusText.Text = _jobProgressText;
+            return;
+        }
         var complete = jobTracks.Count(track => track.Progress >= 100);
         StatusText.Text = $"{complete}/{jobTracks.Count} complete";
     }

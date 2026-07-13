@@ -170,6 +170,7 @@ class Bridge:
         try:
             self._engine.download(**kwargs)
         except Exception as exc:  # noqa: BLE001 - worker boundary
+            logging.exception("Download worker stopped unexpectedly")
             self.emit(
                 {
                     "type": "error",
