@@ -6,7 +6,7 @@
     <AssemblyName>PlaylistDL</AssemblyName>
     <RootNamespace>PlaylistDl.App</RootNamespace>
     <Version>1.6.3</Version>
-    <ApplicationIcon />
+    <ApplicationIcon>Assets\PlaylistDL.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -17,5 +17,9 @@
   </PropertyGroup>
   <ItemGroup Condition="Exists('../../artifacts/tools/playlistdl-tools.zip')">
     <EmbeddedResource Include="../../artifacts/tools/playlistdl-tools.zip" LogicalName="PlaylistDl.Tools" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\PlaylistDL.ico" />
+    <Resource Include="Assets\PlaylistDL.png" />
   </ItemGroup>
 </Project>

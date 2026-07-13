@@ -1,5 +1,7 @@
 # Playlist DL
 
+<img src="src/PlaylistDl.App/Assets/PlaylistDL.png" alt="Playlist DL logo" width="128" />
+
 Windows personal-use playlist downloader. Paste a Spotify playlist, album, or track URL, inspect and select tracks, download source audio through spotDL/yt-dlp, convert to your chosen format, and retain playlist metadata.
 
 > [!WARNING]
@@ -23,10 +25,10 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Spotify public playlist, album, and single-track resolution through spotDL experimental resolver
 - Free-text search intake: type artist and title, pick from ranked YouTube Music songs — works even without Spotify
 - CSV and JSON track-manifest import, including common Exportify columns
-- YouTube Music/YouTube matching and fallback
+- YouTube Music/YouTube matching with conservative automatic alternate-source recovery
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
-- Per-track and overall progress, duplicate scanning, batch cancellation
+- Per-track and overall progress, bounded parallel downloads, duplicate scanning, batch cancellation
 - Multi-source download queue with per-job settings snapshots and sequential execution
 - Per-track Done/Failed results with failure reasons, one-click retry, and automatic backoff retry for rate-limit failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
