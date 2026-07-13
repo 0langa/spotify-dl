@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -375,18 +376,36 @@ public partial class MainWindow : Window
 
     private void ChooseFolderButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog
+        var initialDirectory = FolderPickerPath.ResolveInitialDirectory(OutputDirectoryBox.Text);
+        var attempts = initialDirectory is null ? new string?[] { null } : new string?[] { initialDirectory, null };
+
+        foreach (var attempt in attempts)
         {
-            Title = "Choose playlist output folder",
-            Multiselect = false,
-            InitialDirectory = Directory.Exists(OutputDirectoryBox.Text) ? OutputDirectoryBox.Text : null,
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            OutputDirectoryBox.Text = dialog.FolderName;
-            _settings.OutputDirectory = dialog.FolderName;
-            _settingsService.Save(_settings);
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Choose playlist output folder",
+                Multiselect = false,
+                InitialDirectory = attempt,
+            };
+
+            try
+            {
+                if (dialog.ShowDialog(this) == true)
+                {
+                    OutputDirectoryBox.Text = dialog.FolderName;
+                    _settings.OutputDirectory = dialog.FolderName;
+                    _settingsService.Save(_settings);
+                }
+
+                return;
+            }
+            catch (Exception exception) when (exception is ArgumentException or COMException)
+            {
+                // Windows Shell can reject otherwise valid saved paths. Retry from its default location.
+            }
         }
+
+        StatusText.Text = "Folder picker could not open. Enter the output path manually.";
     }
 
     private void OpenFolderButton_Click(object sender, RoutedEventArgs e)
