@@ -434,21 +434,8 @@ public partial class MainWindow : Window
 
     private void OpenRunLogButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "notepad.exe",
-                UseShellExecute = true,
-            };
-            startInfo.ArgumentList.Add(_backend.LogPath);
-            System.Diagnostics.Process.Start(startInfo);
-        }
-        catch (Exception exception) when (
-            exception is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            StatusText.Text = $"Could not open Run log. File: {_backend.LogPath}";
-        }
+        var logWindow = new RunLogWindow(_backend.LogPath) { Owner = this };
+        logWindow.ShowDialog();
     }
 
     private async void SettingsButton_Click(object sender, RoutedEventArgs e)

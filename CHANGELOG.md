@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.8.1 - 2026-07-14
+
+- Replaced the external Notepad launch with a built-in run-log viewer, avoiding broken Notepad installations and Windows file-association prompts.
+- Added live Refresh and Copy all controls while preserving selectable exact provider diagnostics and the retained log path.
+
 ## 1.8.0 - 2026-07-13
 
 - Replaced spotDL's three-request per-track Spotify refresh with one resilient metadata request, retaining album, artist, date, track count, source URL, and cover art while reducing provider pressure and large-playlist runtime.
