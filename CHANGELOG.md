@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.8.0 - 2026-07-13
+
+- Replaced spotDL's three-request per-track Spotify refresh with one resilient metadata request, retaining album, artist, date, track count, source URL, and cover art while reducing provider pressure and large-playlist runtime.
+- Added bounded metadata retries and rolling-window isolation so an expired anonymous Spotify session or provider-pool exception cannot terminate all remaining tracks.
+- Automatic alternate-source recovery now finishes inside each rolling window instead of waiting until every initial playlist track has run; early failures become final or recovered immediately.
+- Added live exact per-track failure details: select a failed row to read and copy its error, or open the new retained session log directly in Notepad for provider diagnostics and track history.
+- Added processed/saved/failed counts, measured tracks-per-minute, and ETA during downloads.
+- Large jobs now checkpoint once per completed window, preserve partial results on cancellation, and keep processed failures resumable instead of marking them complete.
+- Deduplicated repeated provider progress callbacks and stopped raw backend diagnostics from replacing useful job status text.
+
 ## 1.7.0 - 2026-07-13
 
 - Added conservative automatic alternate-source recovery: failed or unavailable primary matches now try up to three strongly matching, duration-checked candidates sequentially.

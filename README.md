@@ -28,9 +28,9 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - YouTube Music/YouTube matching with conservative automatic alternate-source recovery
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
-- Per-track and overall progress, bounded parallel downloads, duplicate scanning, batch cancellation
+- Per-track and overall progress, bounded parallel downloads, measured throughput/ETA, duplicate scanning, batch cancellation
 - Multi-source download queue with per-job settings snapshots and sequential execution
-- Per-track Done/Failed results with failure reasons, one-click retry, and automatic backoff retry for rate-limit failures
+- Per-track Done/Failed results with selectable exact errors, retained session logs, one-click retry, and automatic backoff retry for transient failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing and advanced yt-dlp argument passthrough
 - Job library with restart-safe resume, per-source progress history, and one-click playlist Sync that downloads only new or unfinished tracks
@@ -40,6 +40,8 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Optional YouTube cookie file for authenticated/Premium formats
 - Update awareness: silent daily startup check plus on-demand check against published GitHub releases
 - One downloadable self-contained Windows x64 executable
+
+Session logs live under `%LOCALAPPDATA%\PlaylistDL\logs` and can be opened from **Run log**. Logs retain exact provider failures for 14 days; cookie contents and application secrets are never written by Playlist DL.
 
 ### Track manifest format
 
@@ -67,7 +69,7 @@ Minimal JSON:
 
 - Public Spotify resolution uses experimental unofficial SpotAPI/spotipyFree path and may break after platform changes.
 - Cancellation takes effect after currently active download batch finishes.
-- Automatic download matching still picks a single candidate; the per-track Source dialog shows ranked candidates when you want to choose.
+- Initial automatic matching picks one candidate; strongly matching duration-checked alternates are tried after recoverable source failures, and the per-track Source dialog remains available for manual correction.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
 - If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; the override persists and activates immediately.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
@@ -75,7 +77,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.7.0
+./scripts/build-release.ps1 -Version 1.8.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1

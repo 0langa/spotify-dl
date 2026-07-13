@@ -1,6 +1,6 @@
 [project]
 name = "playlistdl-backend"
-version = "0.7.0"
+version = "0.8.0"
 description = "Structured spotDL backend for Playlist DL"
 requires-python = ">=3.11,<3.15"
 dependencies = [
