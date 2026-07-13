@@ -1,6 +1,6 @@
 # Playlist DL roadmap
 
-Current baseline: v1.6.2. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
+Current baseline: v1.6.3. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
 
 ## Next priorities
 

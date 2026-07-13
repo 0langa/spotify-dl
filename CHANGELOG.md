@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.6.3 - 2026-07-13
+
+- Fixed Choose folder crashing when a saved output path used forward slashes; paths are now normalized before opening Windows Shell, with a safe fallback if Shell still rejects the initial folder.
+
 ## 1.6.2 - 2026-07-12
 
 - Added a persistent alternate-backend picker for antivirus/VPN path blocks; changes activate without restarting the app.
