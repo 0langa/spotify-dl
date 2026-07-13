@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.7.0 - 2026-07-13
+
+- Added conservative automatic alternate-source recovery: failed or unavailable primary matches now try up to three strongly matching, duration-checked candidates sequentially.
+- Fixed age-restricted or unavailable YouTube sources leaving recoverable tracks permanently failed when public alternate uploads exist.
+- Improved large-playlist throughput with rolling work windows that keep the bounded 1–4 worker pool busy without increasing the configured concurrency.
+- Improved per-track error attribution in concurrent batches so one source failure is not copied onto unrelated tracks.
+- Failed-track reasons now survive restart and Library restore, with one-click retry restored alongside them.
+- Added a custom Playlist DL app icon and logo to the executable, window, and project page.
+
 ## 1.6.3 - 2026-07-13
 
 - Fixed Choose folder crashing when a saved output path used forward slashes; paths are now normalized before opening Windows Shell, with a safe fallback if Shell still rejects the initial folder.

@@ -38,6 +38,8 @@
           <ComboBoxItem Tag="3">3</ComboBoxItem>
           <ComboBoxItem Tag="4">4</ComboBoxItem>
         </ComboBox>
+        <TextBlock Text="Workers stay continuously fed from a rolling queue. 2 is the safest balance; 3–4 can be faster but may trigger provider limits sooner."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
 
         <TextBlock Text="YouTube cookies (optional)" FontWeight="SemiBold" Margin="0,20,0,0" />
         <Grid Margin="0,7,0,0">
