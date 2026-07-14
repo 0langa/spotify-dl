@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.1 - 2026-07-14
+
+- Detects saved alternate backends older than the bundled backend, rejects them before a job starts, and automatically falls back to the current bundled backend.
+- Clears a rejected saved override after successful fallback and shows the repair in the main status bar.
+- Records the backend version in the signed tool manifest so release and runtime version checks use the exact bundled executable.
+
 ## 1.9.0 - 2026-07-14
 
 - Removed all Spotify requests from the download phase. Resolved metadata is normalized locally, eliminating anonymous-session collapse after hundreds of tracks without losing tags or cover art.

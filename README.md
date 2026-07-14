@@ -72,13 +72,13 @@ Minimal JSON:
 - Cancellation takes effect after currently active download batch finishes.
 - Public matching cannot recover audio absent from available providers. Duration-checked alternates are tried automatically after recoverable failures; use the per-track Source dialog when no safe match exists.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
-- If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; the override persists and activates immediately.
+- If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; outdated saved overrides are rejected and replaced by the current bundled backend before a job starts.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.9.0
+./scripts/build-release.ps1 -Version 1.9.1
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
