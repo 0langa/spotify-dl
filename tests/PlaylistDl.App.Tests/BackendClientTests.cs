@@ -28,4 +28,20 @@ public sealed class BackendClientTests
     {
         Assert.Null(BackendClient.SelectBackendOverride(" ", null));
     }
+
+    [Theory]
+    [InlineData("0.8.0", "0.9.0", true)]
+    [InlineData("0.9.0", "0.9.0", false)]
+    [InlineData("0.10.0", "0.9.0", false)]
+    [InlineData("dev", "0.9.0", false)]
+    [InlineData("0.8.0", null, false)]
+    public void OutdatedBackendDetectionRequiresComparableOlderVersion(
+        string launchedVersion,
+        string? bundledVersion,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            BackendClient.IsBackendVersionOutdated(launchedVersion, bundledVersion));
+    }
 }

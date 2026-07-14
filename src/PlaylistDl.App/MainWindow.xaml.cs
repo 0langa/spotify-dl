@@ -57,6 +57,18 @@ public partial class MainWindow : Window
                 StatusText.Text = "Backend warning — open Run log for exact details";
             }
         });
+        _backend.OutdatedBackendRejected += (_, rejectedPath) => Dispatcher.Invoke(() =>
+        {
+            if (string.Equals(
+                _settings.BackendExecutable,
+                rejectedPath,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.BackendExecutable = null;
+                _settingsService.Save(_settings);
+            }
+            StatusText.Text = "Outdated alternate backend replaced with bundled backend";
+        });
         _uiReady = true;
         _savedJob = _jobStore.Load();
         _library.MigrateFromLastJob(_savedJob);

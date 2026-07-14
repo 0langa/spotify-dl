@@ -11,6 +11,7 @@ public sealed class BackendClient : IAsyncDisposable
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string, TaskCompletionSource<JsonElement>> _pending = [];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly SemaphoreSlim _startLock = new(1, 1);
     private readonly RunLog _runLog;
     private Process? _process;
 
@@ -24,28 +25,94 @@ public sealed class BackendClient : IAsyncDisposable
 
     public event EventHandler<JsonElement>? EventReceived;
     public event EventHandler<string>? DiagnosticReceived;
+    public event EventHandler<string>? OutdatedBackendRejected;
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        if (_process is { HasExited: false })
+        await _startLock.WaitAsync(cancellationToken);
+        try
         {
-            return;
+            if (_process is { HasExited: false })
+            {
+                return;
+            }
+
+            var (startInfo, overridePath) = CreateStartInfo(allowOverride: true);
+            var launchedVersion = await StartProcessAsync(startInfo, cancellationToken);
+            var bundledVersion = overridePath is null
+                ? null
+                : ToolBundleService.TryResolveBackendVersion();
+            if (overridePath is null || !IsBackendVersionOutdated(launchedVersion, bundledVersion))
+            {
+                return;
+            }
+
+            _runLog.Write(
+                "app",
+                $"Rejecting outdated alternate backend {launchedVersion}; bundled backend is {bundledVersion}.");
+            await StopBackendAsync();
+            var (bundledStartInfo, _) = CreateStartInfo(allowOverride: false);
+            await StartProcessAsync(bundledStartInfo, cancellationToken);
+            OutdatedBackendRejected?.Invoke(this, overridePath);
+        }
+        finally
+        {
+            _startLock.Release();
+        }
+    }
+
+    private async Task<string?> StartProcessAsync(
+        ProcessStartInfo startInfo,
+        CancellationToken cancellationToken)
+    {
+        var ready = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void ReadyHandler(object? sender, JsonElement message)
+        {
+            if (message.TryGetProperty("type", out var type) && type.GetString() == "ready")
+            {
+                ready.TrySetResult(
+                    message.TryGetProperty("version", out var version) ? version.GetString() : null);
+            }
         }
 
-        var startInfo = CreateStartInfo();
+        EventReceived += ReadyHandler;
         _runLog.Write("app", $"Starting backend: {startInfo.FileName}");
-        _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        if (!_process.Start())
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        _process = process;
+        var started = false;
+        try
         {
-            throw new InvalidOperationException("Backend process failed to start.");
-        }
+            if (!process.Start())
+            {
+                throw new InvalidOperationException("Backend process failed to start.");
+            }
+            started = true;
 
-        _ = Task.Run(() => ReadEventsAsync(_process.StandardOutput, cancellationToken), cancellationToken);
-        _ = Task.Run(() => ReadDiagnosticsAsync(_process.StandardError, cancellationToken), cancellationToken);
-        await Task.Delay(100, cancellationToken);
-        if (_process.HasExited)
+            // The readers belong to the backend lifetime, not to the request that happened
+            // to start it. A cancelled request must not silently disconnect a healthy backend.
+            _ = Task.Run(() => ReadEventsAsync(process.StandardOutput, CancellationToken.None));
+            _ = Task.Run(() => ReadDiagnosticsAsync(process.StandardError, CancellationToken.None));
+            return await ready.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        catch
         {
-            throw new InvalidOperationException("Backend exited during startup.");
+            if (started && ReferenceEquals(_process, process))
+            {
+                await StopBackendAsync();
+            }
+            else
+            {
+                process.Dispose();
+                if (ReferenceEquals(_process, process))
+                {
+                    _process = null;
+                }
+            }
+            throw;
+        }
+        finally
+        {
+            EventReceived -= ReadyHandler;
         }
     }
 
@@ -208,26 +275,28 @@ public sealed class BackendClient : IAsyncDisposable
             ? value.GetString()
             : null;
 
-    private ProcessStartInfo CreateStartInfo()
+    private (ProcessStartInfo StartInfo, string? OverridePath) CreateStartInfo(bool allowOverride)
     {
-        var overridePath = SelectBackendOverride(
-            _configuredBackendPath(),
-            Environment.GetEnvironmentVariable("PLAYLISTDL_BACKEND_PATH"));
+        var overridePath = allowOverride
+            ? SelectBackendOverride(
+                _configuredBackendPath(),
+                Environment.GetEnvironmentVariable("PLAYLISTDL_BACKEND_PATH"))
+            : null;
         if (!string.IsNullOrWhiteSpace(overridePath))
         {
-            return ToolStartInfo(overridePath);
+            return (ToolStartInfo(overridePath), overridePath);
         }
 
         var extracted = ToolBundleService.TryResolveBackend();
         if (extracted is not null)
         {
-            return ToolStartInfo(extracted);
+            return (ToolStartInfo(extracted), null);
         }
 
         var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "playlistdl-backend.exe");
         if (File.Exists(bundled))
         {
-            return ToolStartInfo(bundled);
+            return (ToolStartInfo(bundled), null);
         }
 
         var repository = FindRepositoryRoot();
@@ -237,8 +306,13 @@ public sealed class BackendClient : IAsyncDisposable
         startInfo.ArgumentList.Add(Path.Combine(repository, "backend"));
         startInfo.ArgumentList.Add("playlistdl-backend");
         startInfo.WorkingDirectory = repository;
-        return startInfo;
+        return (startInfo, null);
     }
+
+    public static bool IsBackendVersionOutdated(string? launchedVersion, string? bundledVersion) =>
+        Version.TryParse(launchedVersion, out var launched) &&
+        Version.TryParse(bundledVersion, out var bundled) &&
+        launched < bundled;
 
     public static string? SelectBackendOverride(string? configuredPath, string? environmentPath)
     {
@@ -315,6 +389,7 @@ public sealed class BackendClient : IAsyncDisposable
     {
         await StopBackendAsync();
         _writeLock.Dispose();
+        _startLock.Dispose();
     }
 
     private async Task StopBackendAsync()

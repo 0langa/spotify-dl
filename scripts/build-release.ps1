@@ -50,6 +50,11 @@ try {
         --specpath $pyinstallerWork `
         backend/src/playlistdl_backend/__main__.py
     Assert-NativeSuccess 'PyInstaller'
+    $backendVersion = (& uv run --project backend python -c "from playlistdl_backend import __version__; print(__version__)").Trim()
+    Assert-NativeSuccess 'Backend version query'
+    if (-not $backendVersion) {
+        throw 'Backend version query returned no version.'
+    }
 
     Copy-Item -LiteralPath (Join-Path $backendDist 'playlistdl-backend.exe') -Destination $staging
     Copy-Item -LiteralPath $ffmpeg -Destination $staging
@@ -64,6 +69,7 @@ try {
     }
     [ordered]@{
         version = $Version
+        backend_version = $backendVersion
         files = @($files)
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $staging 'manifest.json') -Encoding utf8
 

@@ -64,6 +64,32 @@ public static class ToolBundleService
         }
     }
 
+    public static string? TryResolveBackendVersion()
+    {
+        var backend = TryResolveBackend();
+        if (backend is null)
+        {
+            return null;
+        }
+
+        var manifestPath = Path.Combine(Path.GetDirectoryName(backend)!, "manifest.json");
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            return document.RootElement.TryGetProperty("backend_version", out var version)
+                ? version.GetString()
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static bool VerifyManifest(string directory)
     {
         var manifestPath = Path.Combine(directory, "manifest.json");
