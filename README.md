@@ -25,7 +25,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Spotify public playlist, album, and single-track resolution through spotDL experimental resolver
 - Free-text search intake: type artist and title, pick from ranked YouTube Music songs — works even without Spotify
 - CSV and JSON track-manifest import, including common Exportify columns
-- YouTube Music/YouTube matching with conservative automatic alternate-source recovery
+- YouTube Music/YouTube matching with duration-checked multi-query alternate-source recovery
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
 - Per-track and overall progress, bounded parallel downloads, measured throughput/ETA, duplicate scanning, batch cancellation
@@ -35,7 +35,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Optional download pacing and advanced yt-dlp argument passthrough
 - Job library with restart-safe resume, per-source progress history, and one-click playlist Sync that downloads only new or unfinished tracks
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags, cover art, and optional embedded lyrics
-- Configurable source folders and filename layouts, including album/track folder organization
+- Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
 - Optional .m3u8 playlist export preserving track order, plus Open folder shortcut
 - Optional YouTube cookie file for authenticated/Premium formats
 - Update awareness: silent daily startup check plus on-demand check against published GitHub releases
@@ -68,8 +68,9 @@ Minimal JSON:
 ## Known limitations
 
 - Public Spotify resolution uses experimental unofficial SpotAPI/spotipyFree path and may break after platform changes.
+- Spotify is used only during source resolution; downloads use retained metadata and do not require a second Spotify session.
 - Cancellation takes effect after currently active download batch finishes.
-- Initial automatic matching picks one candidate; strongly matching duration-checked alternates are tried after recoverable source failures, and the per-track Source dialog remains available for manual correction.
+- Public matching cannot recover audio absent from available providers. Duration-checked alternates are tried automatically after recoverable failures; use the per-track Source dialog when no safe match exists.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
 - If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; the override persists and activates immediately.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
@@ -77,7 +78,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.8.1
+./scripts/build-release.ps1 -Version 1.9.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
