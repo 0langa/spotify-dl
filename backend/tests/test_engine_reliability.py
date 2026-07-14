@@ -11,6 +11,8 @@ from playlistdl_backend.engine import (
     Engine,
     assign_unique_output_suffixes,
     reinitialize_song_resilient,
+    resolve_spotify_track_resilient,
+    song_from_spotify_track_response,
 )
 
 
@@ -30,6 +32,77 @@ def _fake_song(name: str, position: int) -> Song:
         download_url=None,
         list_length=10,
     )
+
+
+def _raw_spotify_track() -> dict[str, Any]:
+    return {
+        "id": "spotify-123",
+        "name": "Reliable Single",
+        "artists": [{"id": "artist-1", "name": "Test Artist"}],
+        "album": {
+            "id": "album-1",
+            "name": "Test Album",
+            "artists": [{"name": "Test Artist"}],
+            "album_type": "album",
+            "release_date": "2024-06-07",
+            "total_tracks": 12,
+            "images": [
+                {"url": "small", "width": 64, "height": 64},
+                {"url": "large", "width": 640, "height": 640},
+            ],
+        },
+        "duration_ms": 213456,
+        "disc_number": 1,
+        "track_number": 4,
+        "explicit": False,
+        "external_urls": {"spotify": "https://open.spotify.com/track/spotify-123"},
+        "external_ids": {"isrc": "TEST12345678"},
+        "popularity": 42,
+    }
+
+
+def test_song_from_track_response_keeps_complete_nested_metadata() -> None:
+    song = song_from_spotify_track_response(
+        _raw_spotify_track(), "https://open.spotify.com/track/spotify-123"
+    )
+
+    assert song.name == "Reliable Single"
+    assert song.artists == ["Test Artist"]
+    assert song.album_name == "Test Album"
+    assert song.duration == 213
+    assert song.year == 2024
+    assert song.cover_url == "large"
+    assert song.isrc == "TEST12345678"
+
+
+def test_track_resolution_retries_only_track_request() -> None:
+    class Client:
+        calls = 0
+
+        def track(self, url: str) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("upstream timeout")
+            return _raw_spotify_track()
+
+        def artist(self, artist_id: str) -> None:
+            raise AssertionError("artist request must not be made")
+
+        def album(self, album_id: str) -> None:
+            raise AssertionError("album request must not be made")
+
+    client = Client()
+    sleeps: list[float] = []
+
+    song = resolve_spotify_track_resilient(
+        "https://open.spotify.com/track/spotify-123",
+        client=client,
+        sleeper=sleeps.append,
+    )
+
+    assert song.song_id == "spotify-123"
+    assert client.calls == 2
+    assert sleeps == [1.0]
 
 
 @pytest.mark.parametrize(

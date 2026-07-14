@@ -5,6 +5,7 @@
 ## 1.9.0 - 2026-07-14
 
 - Removed all Spotify requests from the download phase. Resolved metadata is normalized locally, eliminating anonymous-session collapse after hundreds of tracks without losing tags or cover art.
+- Reduced single-track Spotify intake to one metadata request per attempt, avoiding redundant artist/album calls and retrying transient upstream failures.
 - Expanded automatic recovery to age/sign-in-blocked sources and up to six duration-checked alternatives.
 - Added title-only fallback searches and typo-tolerant core-title matching while retaining artist and duration safeguards against unrelated audio.
 - Prevented different tracks with identical formatted names from silently sharing or overwriting one file; only collisions receive a stable short track-ID suffix.

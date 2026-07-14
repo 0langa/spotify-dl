@@ -144,6 +144,7 @@ FAILURE_HINTS = {
 
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
+_SPOTIFY_RESOLVE_RETRY_SECONDS = 1.0
 _FALLBACK_FAILURE_CLASSES = frozenset(
     {"no_match", "source_unavailable", "youtube_blocked"}
 )
@@ -456,6 +457,92 @@ def normalize_song_for_download(song: Song) -> None:
         song.isrc = ""
 
 
+def song_from_spotify_track_response(raw_track: dict[str, Any], source_url: str) -> Song:
+    """Build a track without spotDL's extra artist and album API requests."""
+    if not raw_track.get("name") or not raw_track.get("duration_ms"):
+        raise ValueError(f"Spotify track is unavailable: {source_url}")
+    artists_meta = raw_track.get("artists") or []
+    artists = [str(artist.get("name")) for artist in artists_meta if artist.get("name")]
+    album = raw_track.get("album") or {}
+    album_artists = [
+        str(artist.get("name"))
+        for artist in album.get("artists") or []
+        if artist.get("name")
+    ]
+    release_date = str(album.get("release_date") or "")
+    images = [image for image in album.get("images") or [] if image.get("url")]
+    cover_url = (
+        max(
+            images,
+            key=lambda image: (image.get("width") or 0) * (image.get("height") or 0),
+        ).get("url")
+        if images
+        else None
+    )
+    external_url = (raw_track.get("external_urls") or {}).get("spotify") or source_url
+    song = Song.from_missing_data(
+        name=str(raw_track["name"]),
+        artists=artists or ["Unknown artist"],
+        artist=artists[0] if artists else "Unknown artist",
+        artist_id=artists_meta[0].get("id") if artists_meta else None,
+        genres=[],
+        disc_number=raw_track.get("disc_number") or 1,
+        disc_count=1,
+        album_id=album.get("id"),
+        album_name=album.get("name") or "",
+        album_artist=(
+            album_artists[0]
+            if album_artists
+            else (artists[0] if artists else "Unknown artist")
+        ),
+        album_type=album.get("album_type"),
+        duration=int(raw_track["duration_ms"] / 1000),
+        year=(
+            int(release_date[:4])
+            if len(release_date) >= 4 and release_date[:4].isdigit()
+            else 0
+        ),
+        date=release_date,
+        track_number=raw_track.get("track_number") or 1,
+        tracks_count=album.get("total_tracks") or 0,
+        song_id=raw_track.get("id") or external_url.rsplit("/", 1)[-1],
+        explicit=bool(raw_track.get("explicit")),
+        publisher=album.get("label") or "",
+        url=external_url,
+        isrc=(raw_track.get("external_ids") or {}).get("isrc") or "",
+        cover_url=cover_url,
+        copyright_text=None,
+        popularity=raw_track.get("popularity"),
+    )
+    normalize_song_for_download(song)
+    return song
+
+
+def resolve_spotify_track_resilient(
+    source_url: str,
+    client: Any | None = None,
+    attempts: int = 3,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> Song:
+    """Resolve a track with one API request per attempt and bounded retry."""
+    spotify = client or SpotifyClient()
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            raw_track = spotify.track(source_url)
+            if not isinstance(raw_track, dict):
+                raise ValueError("Spotify returned incomplete track metadata")
+            return song_from_spotify_track_response(raw_track, source_url)
+        except Exception as exc:  # noqa: BLE001 - unofficial provider variance
+            last_error = exc
+            if attempt + 1 < max(1, attempts):
+                sleeper(_SPOTIFY_RESOLVE_RETRY_SECONDS * (attempt + 1))
+    raise RuntimeError(
+        "Spotify track metadata is temporarily unavailable after "
+        f"{max(1, attempts)} attempts: {last_error}"
+    ) from last_error
+
+
 def reinitialize_song_resilient(
     song: Song,
     client: Any | None = None,
@@ -708,7 +795,7 @@ class Engine:
                 str(cover_url or ""),
                 songs,
             )
-        song = Song.from_url(url)
+        song = resolve_spotify_track_resilient(url)
         return (
             song.name,
             "",

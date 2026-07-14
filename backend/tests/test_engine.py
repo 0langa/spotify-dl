@@ -125,7 +125,7 @@ def test_resolve_album_routes_to_album_metadata(
 
 def test_resolve_track_uses_single_song(engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     song = _fake_song("Single", 1)
-    monkeypatch.setattr(engine_module.Song, "from_url", staticmethod(lambda url: song))
+    monkeypatch.setattr(engine_module, "resolve_spotify_track_resilient", lambda url: song)
 
     result = engine.resolve("https://open.spotify.com/track/xyz")
 
