@@ -5,15 +5,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repo 'artifacts'
-$backendDist = Join-Path $artifacts 'backend'
+$backendDist = Join-Path $artifacts "backend-build-$PID"
 $pyinstallerWork = Join-Path $artifacts 'pyinstaller'
 $staging = Join-Path $artifacts "tools-staging-$PID"
 $tools = Join-Path $artifacts 'tools'
 $release = Join-Path $artifacts 'release'
 $repoPrefix = [IO.Path]::GetFullPath($repo) + [IO.Path]::DirectorySeparatorChar
 $stagingFullPath = [IO.Path]::GetFullPath($staging)
-if (-not $stagingFullPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Unsafe staging path: $stagingFullPath"
+$backendDistFullPath = [IO.Path]::GetFullPath($backendDist)
+foreach ($temporaryPath in @($stagingFullPath, $backendDistFullPath)) {
+    if (-not $temporaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Unsafe temporary path: $temporaryPath"
+    }
+}
+
+function Assert-NativeSuccess([string]$CommandName) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$CommandName failed with exit code $LASTEXITCODE."
+    }
 }
 
 $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
@@ -40,6 +49,7 @@ try {
         --workpath $pyinstallerWork `
         --specpath $pyinstallerWork `
         backend/src/playlistdl_backend/__main__.py
+    Assert-NativeSuccess 'PyInstaller'
 
     Copy-Item -LiteralPath (Join-Path $backendDist 'playlistdl-backend.exe') -Destination $staging
     Copy-Item -LiteralPath $ffmpeg -Destination $staging
@@ -66,6 +76,7 @@ try {
         --self-contained true `
         --output $release `
         -p:Version=$Version
+    Assert-NativeSuccess 'dotnet publish'
 
     $executable = Join-Path $release 'PlaylistDL.exe'
     if (-not (Test-Path -LiteralPath $executable)) {
@@ -82,5 +93,8 @@ finally {
     Pop-Location
     if (Test-Path -LiteralPath $staging) {
         Remove-Item -LiteralPath $staging -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $backendDist) {
+        Remove-Item -LiteralPath $backendDist -Recurse -Force
     }
 }

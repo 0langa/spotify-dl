@@ -83,7 +83,12 @@ def test_search_sources_merges_filters_and_dedupes() -> None:
     assert "https://music.youtube.com/watch?v=dup" in urls
     assert "https://www.youtube.com/watch?v=v1" in urls
     assert len(urls) == len(set(urls))
-    assert client.queries == [("Artist Tune", "songs"), ("Artist Tune", "videos")]
+    assert client.queries == [
+        ("Artist Tune", "songs"),
+        ("Artist Tune", "videos"),
+        ("Tune", "songs"),
+        ("Tune", "videos"),
+    ]
 
 
 def test_search_sources_requires_query_text() -> None:
@@ -126,6 +131,22 @@ def test_search_sources_requires_query_text() -> None:
             },
             False,
         ),
+        (
+            {
+                "title": "RaggaDrop",
+                "artists": ["MANDY"],
+                "duration_seconds": 207,
+            },
+            True,
+        ),
+        (
+            {
+                "title": "The Sound Of Fluxland - K LN",
+                "artists": ["Unrelated Artist"],
+                "duration_seconds": 128,
+            },
+            False,
+        ),
     ],
 )
 def test_candidate_relevance_requires_identity_and_duration(
@@ -136,11 +157,25 @@ def test_candidate_relevance_requires_identity_and_duration(
             candidate,
             title="Willst du"
             if "Willst" in candidate["title"]
+            else "Raggadraop - Radio Version"
+            if "Ragga" in candidate["title"]
+            else "Fluxland"
+            if "Fluxland" in candidate["title"]
             else "Stamp on the Ground - Nightcore & KYANU Edit",
             artists=["Alligatoah"]
             if "Willst" in candidate["title"]
+            else ["MANDY"]
+            if "Ragga" in candidate["title"]
+            else ["Zatox"]
+            if "Fluxland" in candidate["title"]
             else ["ItaloBrothers", "KYANU"],
-            duration_seconds=218 if "Willst" in candidate["title"] else 157,
+            duration_seconds=218
+            if "Willst" in candidate["title"]
+            else 206
+            if "Ragga" in candidate["title"]
+            else 128
+            if "Fluxland" in candidate["title"]
+            else 157,
         )
         is expected
     )

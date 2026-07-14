@@ -7,11 +7,15 @@ import pytest
 from spotdl.types.song import Song
 
 from playlistdl_backend import engine as engine_module
-from playlistdl_backend.engine import Engine, reinitialize_song_resilient
+from playlistdl_backend.engine import (
+    Engine,
+    assign_unique_output_suffixes,
+    reinitialize_song_resilient,
+)
 
 
-def _fake_song(name: str, position: int) -> SimpleNamespace:
-    return SimpleNamespace(
+def _fake_song(name: str, position: int) -> Song:
+    return Song.from_missing_data(
         song_id=f"id-{position}",
         url=f"https://open.spotify.com/track/id-{position}",
         list_position=position,
@@ -24,12 +28,7 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
         isrc=None,
         display_name=f"Artist - {name}",
         download_url=None,
-        genres=None,
-        disc_count=None,
-        tracks_count=None,
-        track_number=position,
-        album_id=None,
-        album_artist=None,
+        list_length=10,
     )
 
 
@@ -37,6 +36,7 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
     ("text", "expected"),
     [
         ("ERROR: Sign in to confirm you're not a bot", "youtube_blocked"),
+        ("ERROR: Please sign in. Use --cookies for authentication", "youtube_blocked"),
         ("HTTP Error 429: Too Many Requests", "youtube_blocked"),
         ("Max retries exceeded with url: /", "network"),
         ("Failed to complete request. (ConnectTimeoutError)", "network"),
@@ -210,7 +210,7 @@ def test_download_uses_rolling_windows_larger_than_worker_count(
     assert _FakeDownloader.last_instance.settings["threads"] == 2
 
 
-def test_resilient_reinitialization_uses_single_track_payload_and_retries() -> None:
+def test_download_reinitialization_never_contacts_spotify() -> None:
     song = Song.from_missing_data(
         name="One",
         artists=["Artist"],
@@ -220,57 +220,59 @@ def test_resilient_reinitialization_uses_single_track_payload_and_retries() -> N
         song_id="id-1",
         list_position=4,
     )
-    raw = {
-        "name": "One",
-        "id": "id-1",
-        "duration_ms": 201000,
-        "disc_number": 1,
-        "track_number": 2,
-        "explicit": False,
-        "external_urls": {"spotify": song.url},
-        "external_ids": {"isrc": "TEST123"},
-        "artists": [{"name": "Artist", "id": "artist-1", "genres": ["rock"]}],
-        "album": {
-            "id": "album-1",
-            "name": "Correct Album",
-            "artists": [{"name": "Artist"}],
-            "album_type": "album",
-            "release_date": "2025-02-03",
-            "total_tracks": 12,
-            "images": [
-                {"url": "small", "width": 64, "height": 64},
-                {"url": "cover", "width": 640, "height": 640},
-            ],
-            "copyrights": [{"text": "2025 Label"}],
-            "label": "Label",
-        },
-    }
-
     class Client:
         calls = 0
 
         def track(self, url: str) -> dict[str, Any]:
-            assert url == song.url
             self.calls += 1
-            if self.calls < 3:
-                raise RuntimeError("Could not get session")
-            return raw
+            raise AssertionError(f"download phase contacted Spotify for {url}")
 
     client = Client()
-    waits: list[float] = []
-    hydrated = reinitialize_song_resilient(song, client, attempts=3, sleeper=waits.append)
+    hydrated = reinitialize_song_resilient(song, client)
 
     assert hydrated is song
-    assert client.calls == 3
-    assert waits == [1.5, 3.0]
-    assert hydrated.album_name == "Correct Album"
+    assert client.calls == 0
+    assert hydrated.album_id == ""
     assert hydrated.album_artist == "Artist"
-    assert hydrated.cover_url == "cover"
-    assert hydrated.genres == ["rock"]
-    assert hydrated.tracks_count == 12
-    assert hydrated.date == "2025-02-03"
-    assert hydrated.publisher == "Label"
+    assert hydrated.genres == []
+    assert hydrated.tracks_count == 0
     assert hydrated.list_position == 4
+
+
+def test_colliding_output_names_receive_stable_track_suffix(tmp_path) -> None:
+    first = _fake_song("Same", 1)
+    second = _fake_song("Same", 2)
+    first.song_id = "spotify-first"
+    second.song_id = "spotify-second"
+    template = str(tmp_path / "{artist} - {title}.{output-ext}")
+
+    assign_unique_output_suffixes([first, second], template, "mp3")
+
+    assert first.__dict__["_playlistdl_output_suffix"] == ""
+    assert second.__dict__["_playlistdl_output_suffix"] == " [spotify-]"
+    second_path = engine_module._create_file_name_with_collision_suffix(
+        song=second,
+        template=template,
+        file_extension="mp3",
+        restrict="none",
+    )
+    assert second_path.name == "Artist - Same [spotify-].mp3"
+
+
+def test_existing_path_owned_by_other_track_is_never_reused(tmp_path) -> None:
+    song = _fake_song("Same", 1)
+    song.song_id = "new-track"
+    base_path = tmp_path / "Artist - Same.mp3"
+    base_path.write_bytes(b"existing")
+    template = str(tmp_path / "{artist} - {title}.{output-ext}")
+
+    assign_unique_output_suffixes(
+        [song],
+        template,
+        "mp3",
+    )
+
+    assert song.__dict__["_playlistdl_output_suffix"] == " [new-trac]"
 
 
 def test_failed_track_recovers_before_next_large_playlist_window(
@@ -391,6 +393,41 @@ def test_download_tries_ranked_relevant_fallback_after_source_failure(
     assert result["fallback_used"] is True
     assert result["source_url"].endswith("fallback")
     assert song.download_url.endswith("fallback")
+
+
+def test_download_tries_alternate_after_age_restricted_source(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = download_env["engine"]
+    song = download_env["songs"][0]
+    engine._songs["job"] = [song]  # type: ignore[assignment]
+    _FakeDownloader.script = {
+        song.song_id: [
+            (None, "Please sign in. Use --cookies for authentication"),
+            ("/out/one.mp3", None),
+        ]
+    }
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda *args, **kwargs: [
+                {
+                    "url": "https://www.youtube.com/watch?v=public-copy",
+                    "title": "Artist - One",
+                    "artists": ["Artist"],
+                    "duration_seconds": 200,
+                    "result_type": "video",
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", download_env["out"], retries=0)
+
+    result = _last_completion(download_env["events"])["results"][0]
+    assert result["success"] is True
+    assert result["fallback_used"] is True
 
 
 def test_download_rejects_irrelevant_fallback_candidate(

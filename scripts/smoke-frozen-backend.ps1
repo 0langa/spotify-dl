@@ -1,10 +1,14 @@
 param(
-    [string]$BackendPath = 'artifacts/backend/playlistdl-backend.exe',
+    [string]$BackendPath,
+    [string]$ToolsBundle = 'artifacts/tools/playlistdl-tools.zip',
     [string]$SpotifyUrl = 'https://open.spotify.com/track/0yhPEz5KxlDwckGJaMlZqM'
 )
 
 $ErrorActionPreference = 'Stop'
-$backend = (Resolve-Path -LiteralPath $BackendPath).Path
+$preparedBackend = & (Join-Path $PSScriptRoot 'prepare-smoke-backend.ps1') `
+    -BackendPath $BackendPath `
+    -ToolsBundle $ToolsBundle
+$backend = $preparedBackend.Path
 $startInfo = [Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = $backend
 $startInfo.UseShellExecute = $false
@@ -55,4 +59,7 @@ finally {
         $process.Kill($true)
     }
     $process.Dispose()
+    if ($preparedBackend.CleanupRoot -and (Test-Path -LiteralPath $preparedBackend.CleanupRoot)) {
+        Remove-Item -LiteralPath $preparedBackend.CleanupRoot -Recurse -Force
+    }
 }

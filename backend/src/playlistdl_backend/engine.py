@@ -18,6 +18,7 @@ from spotdl.download.progress_handler import ProgressHandler, SongTracker
 from spotdl.types.album import Album
 from spotdl.types.playlist import Playlist
 from spotdl.types.song import Song
+from spotdl.utils.formatter import create_file_name as spotdl_create_file_name
 from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.manifest import load_manifest
@@ -44,6 +45,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "youtube_blocked",
         (
             "sign in to confirm",
+            "please sign in",
             "429",
             "too many requests",
             "read timed out",
@@ -142,8 +144,9 @@ FAILURE_HINTS = {
 
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
-_METADATA_RETRY_SECONDS = 1.5
-_FALLBACK_FAILURE_CLASSES = frozenset({"no_match", "source_unavailable"})
+_FALLBACK_FAILURE_CLASSES = frozenset(
+    {"no_match", "source_unavailable", "youtube_blocked"}
+)
 _IDENTITY_STOPWORDS = frozenset(
     {
         "a",
@@ -297,6 +300,11 @@ def _compact_identity(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+def _core_title(value: str) -> str:
+    """Return title portion before common version/remix qualifiers."""
+    return _compact_identity(re.split(r"\s+-\s+|[\(\[\{]", value, maxsplit=1)[0])
+
+
 def candidate_is_relevant(
     candidate: dict[str, Any],
     title: str,
@@ -326,7 +334,46 @@ def candidate_is_relevant(
         for artist in artists
     )
     exact_title = _compact_identity(title) == _compact_identity(candidate_title_text)
-    return title_overlap >= 0.60 and (artist_match or exact_title or title_overlap >= 0.85)
+    target_core = _core_title(title)
+    candidate_core = _core_title(candidate_title_text)
+    core_match = bool(
+        artist_match
+        and target_core
+        and candidate_core
+        and (
+            target_core in candidate_core
+            or candidate_core in target_core
+            or _edit_similarity(target_core, candidate_core) >= 0.82
+        )
+    )
+    strong_overlap = title_overlap >= 0.85 and (
+        len(target_title) >= 2 or exact_title
+    )
+    return core_match or (
+        title_overlap >= 0.60 and (artist_match or exact_title or strong_overlap)
+    )
+
+
+def _edit_similarity(left: str, right: str) -> float:
+    """Small dependency-free edit similarity for misspelled provider titles."""
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_character != right_character),
+                )
+            )
+        previous = current
+    distance = previous[-1]
+    return 1.0 - distance / max(len(left), len(right))
 
 
 def _source_identity(url: str | None) -> str:
@@ -409,121 +456,19 @@ def normalize_song_for_download(song: Song) -> None:
         song.isrc = ""
 
 
-def _is_spotify_track(song: Song) -> bool:
-    url = str(getattr(song, "url", "") or "")
-    parsed = urlparse(url)
-    return bool(
-        parsed.hostname
-        and (parsed.hostname == "spotify.com" or parsed.hostname.endswith(".spotify.com"))
-        and "/track/" in parsed.path
-    )
-
-
-def _largest_image_url(images: list[dict[str, Any]]) -> str | None:
-    if not images:
-        return None
-    largest = max(
-        images,
-        key=lambda image: (image.get("width") or 0) * (image.get("height") or 0),
-    )
-    return largest.get("url")
-
-
 def reinitialize_song_resilient(
     song: Song,
     client: Any | None = None,
     attempts: int = 3,
     sleeper: Callable[[float], None] | None = None,
 ) -> Song:
-    """Enrich one Spotify song with one resilient request instead of spotDL's three.
+    """Complete structural fields locally; never contact Spotify during download.
 
-    SpotipyFree's track response already contains the album, artist, date and cover
-    information. spotDL normally discards that nested data and then makes separate
-    track, album and artist calls. Large jobs eventually exhausted the provider's
-    anonymous session and stopped with ``Could not get session``.
+    Resolve/import already supplies user-facing metadata. Re-fetching each track
+    made long jobs depend on an anonymous Spotify session for a second time and
+    caused bursts of ``Could not get session`` failures after hundreds of songs.
     """
-    if not _is_spotify_track(song):
-        normalize_song_for_download(song)
-        return song
-
-    spotify = client or SpotifyClient()
-    wait = sleeper or time.sleep
-    last_error: Exception | None = None
-    raw_track: dict[str, Any] | None = None
-    for attempt in range(max(1, attempts)):
-        try:
-            raw_track = spotify.track(song.url)
-            if not isinstance(raw_track, dict) or not raw_track.get("name"):
-                raise ValueError("Spotify returned incomplete track metadata")
-            break
-        except Exception as exc:  # noqa: BLE001 - anonymous provider variance
-            last_error = exc
-            if attempt + 1 < max(1, attempts):
-                wait(_METADATA_RETRY_SECONDS * (attempt + 1))
-    if raw_track is None:
-        raise RuntimeError(
-            f"Spotify metadata refresh failed after {max(1, attempts)} attempts: {last_error}"
-        ) from last_error
-
-    album = raw_track.get("album") or {}
-    artists_meta = raw_track.get("artists") or []
-    artist_names = [str(artist.get("name")) for artist in artists_meta if artist.get("name")]
-    album_artists = [
-        str(artist.get("name")) for artist in (album.get("artists") or []) if artist.get("name")
-    ]
-    genres = [
-        str(genre)
-        for genre in [
-            *(album.get("genres") or []),
-            *(genre for artist in artists_meta for genre in (artist.get("genres") or [])),
-        ]
-        if genre
-    ]
-    release_date = str(album.get("release_date") or "")
-    copyrights = album.get("copyrights") or []
-    copyright_text = next(
-        (str(item.get("text")) for item in copyrights if item.get("text")), None
-    )
-    data = song.json
-    enriched = {
-        "name": raw_track.get("name"),
-        "artists": artist_names or None,
-        "artist": artist_names[0] if artist_names else None,
-        "artist_id": artists_meta[0].get("id") if artists_meta else None,
-        "genres": genres,
-        "disc_number": raw_track.get("disc_number") or 1,
-        "disc_count": 1,
-        "album_id": album.get("id"),
-        "album_name": album.get("name"),
-        "album_artist": (
-            album_artists[0] if album_artists else (artist_names[0] if artist_names else None)
-        ),
-        "album_type": album.get("album_type"),
-        "duration": int((raw_track.get("duration_ms") or 0) / 1000) or None,
-        "year": (
-            int(release_date[:4])
-            if len(release_date) >= 4 and release_date[:4].isdigit()
-            else 0
-        ),
-        "date": release_date,
-        "track_number": raw_track.get("track_number") or 1,
-        "tracks_count": album.get("total_tracks") or 0,
-        "song_id": raw_track.get("id") or raw_track.get("track_id"),
-        "explicit": raw_track.get("explicit"),
-        "publisher": album.get("label") or album.get("courtesyLine") or "",
-        "url": (raw_track.get("external_urls") or {}).get("spotify"),
-        "isrc": (raw_track.get("external_ids") or {}).get("isrc") or "",
-        "cover_url": _largest_image_url(album.get("images") or []),
-        "copyright_text": copyright_text,
-        "popularity": raw_track.get("popularity"),
-    }
-    for key, value in enriched.items():
-        if data.get(key) is None and value is not None:
-            data[key] = value
-    # Keep identity stable: fallback attempts receive original playlist object.
-    # Mutating it prevents another metadata request after source-search failure.
-    for key, value in data.items():
-        setattr(song, key, value)
+    _ = client, attempts, sleeper
     normalize_song_for_download(song)
     return song
 
@@ -532,6 +477,82 @@ def reinitialize_song_resilient(
 # the resilient implementation once keeps spotDL's download pipeline intact while
 # removing its redundant album/artist calls.
 spotdl_downloader_module.reinit_song = reinitialize_song_resilient
+
+
+_OUTPUT_SUFFIX_ATTRIBUTE = "_playlistdl_output_suffix"
+
+
+def _create_file_name_with_collision_suffix(*args: Any, **kwargs: Any) -> Path:
+    """Preserve selected naming preset while disambiguating colliding tracks."""
+    path = spotdl_create_file_name(*args, **kwargs)
+    song = kwargs.get("song") or args[0]
+    suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
+    return path.with_name(f"{path.stem}{suffix}{path.suffix}") if suffix else path
+
+
+spotdl_downloader_module.create_file_name = _create_file_name_with_collision_suffix
+
+
+def _path_key(path: Path | str) -> str:
+    return os.path.normcase(os.path.abspath(str(path))).casefold()
+
+
+def assign_unique_output_suffixes(
+    songs: list[Song],
+    output_template: str,
+    audio_format: str,
+    known_songs: dict[str, list[Path]] | None = None,
+) -> None:
+    """Avoid silent overwrites when different tracks format to the same path."""
+    known_owner = {
+        _path_key(path): str(url)
+        for url, paths in (known_songs or {}).items()
+        for path in paths
+    }
+    groups: dict[str, list[tuple[Song, Path]]] = {}
+    for song in songs:
+        setattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "")
+        base_path = spotdl_create_file_name(
+            song=song,
+            template=output_template,
+            file_extension=audio_format,
+            restrict="none",
+        )
+        groups.setdefault(_path_key(base_path), []).append((song, base_path))
+
+    reserved = set(known_owner)
+    for base_key, entries in groups.items():
+        if entries[0][1].exists():
+            reserved.add(base_key)
+        existing_owner = known_owner.get(base_key)
+        keeper: Song | None = next(
+            (song for song, _ in entries if str(song.url or "") == existing_owner),
+            None,
+        )
+        if keeper is None and base_key not in reserved:
+            keeper = entries[0][0]
+            reserved.add(base_key)
+
+        for song, base_path in entries:
+            if song is keeper:
+                continue
+            raw_id = re.sub(r"[^\w-]", "", str(song.song_id or song.url or ""))[:8]
+            token = raw_id or str(song.list_position or "track")
+            ordinal = 1
+            while True:
+                tail = "" if ordinal == 1 else f"-{ordinal}"
+                suffix = f" [{token}{tail}]"
+                candidate = base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+                candidate_key = _path_key(candidate)
+                candidate_owner = known_owner.get(candidate_key)
+                if (
+                    candidate_owner == str(song.url or "")
+                    or (candidate_key not in reserved and not candidate.exists())
+                ):
+                    setattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, suffix)
+                    reserved.add(candidate_key)
+                    break
+                ordinal += 1
 
 
 def build_output_paths(
@@ -726,15 +747,21 @@ class Engine:
             from ytmusicapi import YTMusic
 
             client = YTMusic()
-        query = f"{artist} {title}".strip()
-        if not query:
+        primary_query = f"{artist} {title}".strip()
+        if not primary_query:
             raise ValueError("Search needs a title or artist")
+        queries = list(dict.fromkeys((primary_query, title.strip())))
         raw: list[dict[str, Any]] = []
-        for search_filter in ("songs", "videos"):
-            try:
-                raw.extend(client.search(query, filter=search_filter, limit=limit))
-            except Exception:  # noqa: BLE001 - provider variance
-                logger.exception("ytmusicapi search failed for filter %s", search_filter)
+        for query in queries:
+            for search_filter in ("songs", "videos"):
+                try:
+                    raw.extend(client.search(query, filter=search_filter, limit=limit))
+                except Exception:  # noqa: BLE001 - provider variance
+                    logger.exception(
+                        "ytmusicapi search failed for query %r filter %s",
+                        query,
+                        search_filter,
+                    )
         candidates = []
         seen: set[str] = set()
         for item in raw:
@@ -743,7 +770,16 @@ class Engine:
                 continue
             seen.add(candidate["url"])
             candidates.append(candidate)
-        return rank_candidates(candidates, duration_seconds)[:limit]
+        ranked = rank_candidates(candidates, duration_seconds)
+        ranked.sort(
+            key=lambda candidate: not candidate_is_relevant(
+                candidate,
+                title=title,
+                artists=[artist] if artist else [],
+                duration_seconds=duration_seconds,
+            )
+        )
+        return ranked[:limit]
 
     @staticmethod
     def ensure_runtime() -> None:
@@ -803,8 +839,7 @@ class Engine:
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
         for song in songs:
-            if not _is_spotify_track(song):
-                normalize_song_for_download(song)
+            normalize_song_for_download(song)
 
         output, output_template = build_output_paths(
             output_dir,
@@ -832,6 +867,12 @@ class Engine:
             "ffmpeg": os.environ.get("PLAYLISTDL_FFMPEG", "ffmpeg"),
         }
         downloader = Downloader(settings)
+        assign_unique_output_suffixes(
+            songs,
+            output_template,
+            audio_format,
+            getattr(downloader, "known_songs", None),
+        )
         downloader.progress_handler.close()
         downloader.progress_handler = ProgressHandler(
             simple_tui=True,
@@ -1056,7 +1097,7 @@ class Engine:
                 song.name,
                 (song.artists or [getattr(song, "artist", "")])[0],
                 duration_seconds=song.duration,
-                limit=8,
+                limit=24,
             )
         except Exception:  # noqa: BLE001 - fallback must not abort the whole job
             logger.exception("Alternate source search failed for %s", track_id)
@@ -1072,7 +1113,7 @@ class Engine:
                 artists=list(song.artists or []),
                 duration_seconds=song.duration,
             )
-        ][:3]
+        ][:6]
         for candidate in relevant:
             if self._cancel.is_set():
                 return
