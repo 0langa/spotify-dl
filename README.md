@@ -13,7 +13,9 @@ Requirements: Windows 10 22H2+ x64, .NET 10 SDK, uv, FFmpeg, Deno.
 
 ```powershell
 uv sync --project backend --extra dev
-uv run --project backend pytest
+uv run --project backend --extra dev ruff check backend
+uv run --project backend --extra dev ruff format --check backend
+uv run --project backend --extra dev python -m pytest
 dotnet build PlaylistDl.slnx
 dotnet run --project src/PlaylistDl.App/PlaylistDl.App.csproj
 ```
@@ -78,13 +80,13 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 1.9.1
+./scripts/build-release.ps1 -Version 2.0.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
 ```
 
-Build freezes Python backend, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use.
+Build freezes Python backend, excludes unused HTTP-server modules, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use. Release directory also contains checksummed license and third-party notices.
 
 See [ROADMAP.md](ROADMAP.md) for current development priorities and standing release gates.
 

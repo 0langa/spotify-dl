@@ -88,6 +88,10 @@ public static class ToolBundleService
         {
             return null;
         }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static bool VerifyManifest(string directory)
@@ -130,7 +134,9 @@ public static class ToolBundleService
         {
             return false;
         }
-        catch (JsonException)
+        catch (Exception exception) when (
+            exception is JsonException or InvalidOperationException or KeyNotFoundException or
+            UnauthorizedAccessException or CryptographicException)
         {
             return false;
         }

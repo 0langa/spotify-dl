@@ -12,21 +12,25 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 10.0.x
-      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
+          version: 0.11.21
       - name: Restore Python
         run: uv sync --project backend --extra dev --locked
       - name: Lint and test Python
         run: |
-          uv run --project backend ruff check backend
-          uv run --project backend pytest
+          uv run --project backend --extra dev ruff check backend
+          uv run --project backend --extra dev ruff format --check backend
+          uv run --project backend --extra dev python -m pytest --cov=playlistdl_backend --cov-fail-under=80
+          ./scripts/audit-python-dependencies.ps1
       - name: Build and test .NET
         run: |
           dotnet restore PlaylistDl.slnx
+          dotnet format PlaylistDl.slnx --verify-no-changes --no-restore
           dotnet build PlaylistDl.slnx --configuration Release --no-restore
           dotnet test PlaylistDl.slnx --configuration Release --no-build

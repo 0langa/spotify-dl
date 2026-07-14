@@ -65,7 +65,15 @@ public partial class MainWindow : Window
                 StringComparison.OrdinalIgnoreCase))
             {
                 _settings.BackendExecutable = null;
-                _settingsService.Save(_settings);
+                try
+                {
+                    _settingsService.Save(_settings);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    StatusText.Text = $"Outdated backend replaced, but settings could not be repaired: {exception.Message}";
+                    return;
+                }
             }
             StatusText.Text = "Outdated alternate backend replaced with bundled backend";
         });
@@ -345,53 +353,94 @@ public partial class MainWindow : Window
         IReadOnlyList<TrackItem> jobTracks,
         QueuedJobSettings snapshot)
     {
-        Directory.CreateDirectory(outputDirectory);
-        _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
-        RetryFailedButton.Visibility = Visibility.Collapsed;
-        _jobRunning = true;
-        _jobProgressText = null;
-        AnalyzeButton.IsEnabled = false;
-        DownloadButton.IsEnabled = false;
-        CancelButton.IsEnabled = true;
-        StatusText.Text = "Starting downloads…";
-        HideFailureBanner();
-        await _backend.SendCommandAsync(
-            "start",
-            new
+        try
+        {
+            if (string.IsNullOrWhiteSpace(outputDirectory))
             {
-                playlist_id = playlistId,
-                output_dir = outputDirectory,
-                format = snapshot.Format,
-                bitrate = snapshot.Bitrate,
-                threads = snapshot.Threads,
-                cookie_file = snapshot.CookieFile,
-                track_ids = jobTracks.Select(track => track.Id).ToList(),
-                write_m3u = snapshot.WriteM3u,
-                source_overrides = jobTracks
-                    .Where(track => !string.IsNullOrWhiteSpace(track.SourceOverride))
-                    .ToDictionary(track => track.Id, track => track.SourceOverride),
-                naming_preset = snapshot.NamingPreset,
-                create_source_folder = snapshot.CreateSourceFolder,
-                throttle_seconds = snapshot.ThrottleSeconds,
-                retries = 1,
-                ytdlp_args = snapshot.YtDlpArgs,
-                embed_lyrics = snapshot.EmbedLyrics,
-            });
-        SaveCurrentJob();
+                throw new ArgumentException("Choose a valid output folder before downloading.");
+            }
+
+            Directory.CreateDirectory(outputDirectory);
+            _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
+            RetryFailedButton.Visibility = Visibility.Collapsed;
+            _jobRunning = true;
+            _jobProgressText = null;
+            AnalyzeButton.IsEnabled = false;
+            DownloadButton.IsEnabled = false;
+            CancelButton.IsEnabled = true;
+            StatusText.Text = "Starting downloads…";
+            HideFailureBanner();
+            await _backend.RequestAsync(
+                "start",
+                new
+                {
+                    playlist_id = playlistId,
+                    output_dir = outputDirectory,
+                    format = snapshot.Format,
+                    bitrate = snapshot.Bitrate,
+                    threads = snapshot.Threads,
+                    cookie_file = snapshot.CookieFile,
+                    track_ids = jobTracks.Select(track => track.Id).ToList(),
+                    write_m3u = snapshot.WriteM3u,
+                    source_overrides = jobTracks
+                        .Where(track => !string.IsNullOrWhiteSpace(track.SourceOverride))
+                        .GroupBy(track => track.Id)
+                        .ToDictionary(group => group.Key, group => group.First().SourceOverride),
+                    naming_preset = snapshot.NamingPreset,
+                    create_source_folder = snapshot.CreateSourceFolder,
+                    throttle_seconds = snapshot.ThrottleSeconds,
+                    retries = 1,
+                    ytdlp_args = snapshot.YtDlpArgs,
+                    embed_lyrics = snapshot.EmbedLyrics,
+                });
+            SaveCurrentJob();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _jobRunning = false;
+            _jobProgressText = null;
+            _queueRunning = false;
+            _queue.Clear();
+            _activeQueuedJob = null;
+            AnalyzeButton.IsEnabled = true;
+            CancelButton.IsEnabled = false;
+            UpdateQueueUi();
+            UpdateSelectionUi();
+            StatusText.Text = $"Download could not start: {exception.Message}";
+            SaveCurrentJob();
+        }
     }
 
     private async void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_sourceOperationCts is not null)
+        try
         {
-            _sourceOperationCts.Cancel();
-            StatusText.Text = "Cancelling source operation…";
-            await _backend.RestartAsync();
-            return;
-        }
+            if (_sourceOperationCts is not null)
+            {
+                _sourceOperationCts.Cancel();
+                StatusText.Text = "Cancelling source operation…";
+                SaveCurrentJob();
+                await _backend.RestartAsync();
+                InvalidateBackendSession("Source operation cancelled — analyze or resume a source to continue");
+                return;
+            }
 
-        await _backend.SendCommandAsync("cancel", new { });
-        StatusText.Text = "Cancellation requested…";
+            await _backend.RequestAsync("cancel", new { });
+            StatusText.Text = "Cancellation requested…";
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _jobRunning = false;
+            _queueRunning = false;
+            _queue.Clear();
+            _activeQueuedJob = null;
+            AnalyzeButton.IsEnabled = true;
+            CancelButton.IsEnabled = false;
+            UpdateQueueUi();
+            UpdateSelectionUi();
+            StatusText.Text = $"Backend stopped before cancellation completed: {exception.Message}";
+            SaveCurrentJob();
+        }
     }
 
     private void ChooseFolderButton_Click(object sender, RoutedEventArgs e)
@@ -456,20 +505,47 @@ public partial class MainWindow : Window
         var dialog = new SettingsWindow(_settings) { Owner = this };
         if (dialog.ShowDialog() == true)
         {
-            _settingsService.Save(_settings);
-            if (!string.Equals(previousBackend, _settings.BackendExecutable, StringComparison.OrdinalIgnoreCase))
+            try
             {
-                await _backend.RestartAsync();
-                StatusText.Text = string.IsNullOrWhiteSpace(_settings.BackendExecutable)
-                    ? "Bundled backend restored"
-                    : "Alternate backend activated";
+                _settingsService.Save(_settings);
+                if (!string.Equals(previousBackend, _settings.BackendExecutable, StringComparison.OrdinalIgnoreCase))
+                {
+                    SaveCurrentJob();
+                    await _backend.RestartAsync();
+                    InvalidateBackendSession(
+                        string.IsNullOrWhiteSpace(_settings.BackendExecutable)
+                            ? "Bundled backend restored — analyze or resume a source to continue"
+                            : "Alternate backend activated — analyze or resume a source to continue");
+                }
+                else
+                {
+                    StatusText.Text = "Settings saved";
+                }
+                SyncQuickFormat();
             }
-            else
+            catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                StatusText.Text = "Settings saved";
+                StatusText.Text = $"Settings could not be applied: {exception.Message}";
             }
-            SyncQuickFormat();
         }
+    }
+
+    private void InvalidateBackendSession(string status)
+    {
+        _playlist = null;
+        _activeTrackIds.Clear();
+        _failedTracks.Clear();
+        _queue.Clear();
+        _queueRunning = false;
+        _activeQueuedJob = null;
+        Tracks.ReplaceAll(Array.Empty<TrackItem>());
+        PlaylistTitle.Text = "No source loaded";
+        PlaylistSummary.Text = "Analyze a source or resume a saved job";
+        RetryFailedButton.Visibility = Visibility.Collapsed;
+        OverallProgress.Value = 0;
+        UpdateQueueUi();
+        UpdateSelectionUi();
+        StatusText.Text = status;
     }
 
     private void SyncQuickFormat()
@@ -1024,7 +1100,7 @@ public partial class MainWindow : Window
             _library.Save(_savedJob);
             ResumeButton.Visibility = Visibility.Visible;
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // Downloads remain usable if local job persistence is unavailable.
         }

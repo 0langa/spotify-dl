@@ -5,6 +5,16 @@ namespace PlaylistDl.App.Tests;
 
 public sealed class BackendClientTests
 {
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(null, false)]
+    [InlineData(0, false)]
+    [InlineData(2, false)]
+    public void BackendProtocolMustMatchClient(int? protocol, bool expected)
+    {
+        Assert.Equal(expected, BackendClient.IsSupportedProtocol(protocol));
+    }
+
     [Fact]
     public void ConfiguredBackendOverridesEnvironment()
     {

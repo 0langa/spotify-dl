@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.0.0 - 2026-07-14
+
+- Declared backend protocol 1 stable and reject alternate backends with a missing or incompatible protocol before requests can hang or corrupt UI state.
+- Made backend restarts invalidate dead in-memory playlist and queue IDs, with saved jobs retained for explicit resume.
+- Prevented backend start, cancellation, malformed-event, and local persistence failures from escaping WPF event handlers and crashing the app.
+- Isolated every download attempt from retained source metadata, so cleared manual sources and retries no longer reuse mutations from earlier runs.
+- Turned provider-omitted tracks into explicit failures and always close downloader progress workers after completion, cancellation, or failure.
+- Made run logging fall back to temporary storage and made unreadable settings, jobs, libraries, and tool manifests degrade safely.
+- Updated yt-dlp to 2026.07.04, including its latest security and YouTube extractor fixes.
+- Added formatting, 80% Python coverage, protocol, dependency-advisory, and frozen-module gates; current suite covers 103 backend and 64 app tests.
+- Pinned GitHub Actions and build tools, reruns full source verification during releases, cleans stale release output, requires exact project/tag version alignment, and checksums every published asset.
+
 ## 1.9.1 - 2026-07-14
 
 - Detects saved alternate backends older than the bundled backend, rejects them before a job starts, and automatically falls back to the current bundled backend.

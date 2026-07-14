@@ -26,7 +26,8 @@ public sealed class SettingsService
                     ?? new AppSettings();
             }
         }
-        catch (JsonException)
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException)
         {
             // Invalid settings fall back to safe defaults.
         }

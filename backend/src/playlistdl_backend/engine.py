@@ -1,5 +1,8 @@
+# ruff: noqa: I001 -- spotDL bootstrap must run before importing spotDL.
 from __future__ import annotations
 
+import copy
+import importlib.util
 import logging
 import os
 import re
@@ -11,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from playlistdl_backend import spotdl_bootstrap as _spotdl_bootstrap  # noqa: F401
 
 import spotdl.download.downloader as spotdl_downloader_module
 from spotdl.download.downloader import Downloader
@@ -145,9 +150,7 @@ FAILURE_HINTS = {
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
 _SPOTIFY_RESOLVE_RETRY_SECONDS = 1.0
-_FALLBACK_FAILURE_CLASSES = frozenset(
-    {"no_match", "source_unavailable", "youtube_blocked"}
-)
+_FALLBACK_FAILURE_CLASSES = frozenset({"no_match", "source_unavailable", "youtube_blocked"})
 _IDENTITY_STOPWORDS = frozenset(
     {
         "a",
@@ -173,6 +176,13 @@ _DIAGNOSE_ENDPOINTS = (
     "https://music.youtube.com/",
     "https://www.youtube.com/",
 )
+
+_EXCLUDED_SERVER_MODULES = ("fastapi", "starlette", "uvicorn")
+
+
+def find_bundled_server_modules() -> list[str]:
+    """Return HTTP-server dependencies that must stay outside frozen desktop builds."""
+    return [name for name in _EXCLUDED_SERVER_MODULES if importlib.util.find_spec(name) is not None]
 
 
 def _default_probe(url: str) -> tuple[bool, str]:
@@ -347,12 +357,8 @@ def candidate_is_relevant(
             or _edit_similarity(target_core, candidate_core) >= 0.82
         )
     )
-    strong_overlap = title_overlap >= 0.85 and (
-        len(target_title) >= 2 or exact_title
-    )
-    return core_match or (
-        title_overlap >= 0.60 and (artist_match or exact_title or strong_overlap)
-    )
+    strong_overlap = title_overlap >= 0.85 and (len(target_title) >= 2 or exact_title)
+    return core_match or (title_overlap >= 0.60 and (artist_match or exact_title or strong_overlap))
 
 
 def _edit_similarity(left: str, right: str) -> float:
@@ -465,9 +471,7 @@ def song_from_spotify_track_response(raw_track: dict[str, Any], source_url: str)
     artists = [str(artist.get("name")) for artist in artists_meta if artist.get("name")]
     album = raw_track.get("album") or {}
     album_artists = [
-        str(artist.get("name"))
-        for artist in album.get("artists") or []
-        if artist.get("name")
+        str(artist.get("name")) for artist in album.get("artists") or [] if artist.get("name")
     ]
     release_date = str(album.get("release_date") or "")
     images = [image for image in album.get("images") or [] if image.get("url")]
@@ -491,16 +495,12 @@ def song_from_spotify_track_response(raw_track: dict[str, Any], source_url: str)
         album_id=album.get("id"),
         album_name=album.get("name") or "",
         album_artist=(
-            album_artists[0]
-            if album_artists
-            else (artists[0] if artists else "Unknown artist")
+            album_artists[0] if album_artists else (artists[0] if artists else "Unknown artist")
         ),
         album_type=album.get("album_type"),
         duration=int(raw_track["duration_ms"] / 1000),
         year=(
-            int(release_date[:4])
-            if len(release_date) >= 4 and release_date[:4].isdigit()
-            else 0
+            int(release_date[:4]) if len(release_date) >= 4 and release_date[:4].isdigit() else 0
         ),
         date=release_date,
         track_number=raw_track.get("track_number") or 1,
@@ -592,9 +592,7 @@ def assign_unique_output_suffixes(
 ) -> None:
     """Avoid silent overwrites when different tracks format to the same path."""
     known_owner = {
-        _path_key(path): str(url)
-        for url, paths in (known_songs or {}).items()
-        for path in paths
+        _path_key(path): str(url) for url, paths in (known_songs or {}).items() for path in paths
     }
     groups: dict[str, list[tuple[Song, Path]]] = {}
     for song in songs:
@@ -632,9 +630,8 @@ def assign_unique_output_suffixes(
                 candidate = base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
                 candidate_key = _path_key(candidate)
                 candidate_owner = known_owner.get(candidate_key)
-                if (
-                    candidate_owner == str(song.url or "")
-                    or (candidate_key not in reserved and not candidate.exists())
+                if candidate_owner == str(song.url or "") or (
+                    candidate_key not in reserved and not candidate.exists()
                 ):
                     setattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, suffix)
                     reserved.add(candidate_key)
@@ -859,11 +856,13 @@ class Engine:
             candidates.append(candidate)
         ranked = rank_candidates(candidates, duration_seconds)
         ranked.sort(
-            key=lambda candidate: not candidate_is_relevant(
-                candidate,
-                title=title,
-                artists=[artist] if artist else [],
-                duration_seconds=duration_seconds,
+            key=lambda candidate: (
+                not candidate_is_relevant(
+                    candidate,
+                    title=title,
+                    artists=[artist] if artist else [],
+                    duration_seconds=duration_seconds,
+                )
             )
         )
         return ranked[:limit]
@@ -874,6 +873,10 @@ class Engine:
         from ytmusicapi import YTMusic
 
         YTMusic()
+        if getattr(sys, "frozen", False) and (bundled := find_bundled_server_modules()):
+            raise RuntimeError(
+                "Frozen backend unexpectedly contains unused server modules: " + ", ".join(bundled)
+            )
 
     def ensure_startable(self, playlist_id: str, audio_format: str) -> None:
         """Validate a start request synchronously so errors precede job_started."""
@@ -908,14 +911,18 @@ class Engine:
                 f"Unsupported audio format: {audio_format}. "
                 f"Supported formats: {', '.join(SUPPORTED_FORMATS)}"
             )
-        songs = self._songs.get(playlist_id)
-        if songs is None:
+        stored_songs = self._songs.get(playlist_id)
+        if stored_songs is None:
             raise ValueError("Unknown or expired playlist id")
         if track_ids:
             selected = set(track_ids)
-            songs = [song for song in songs if (song.song_id or song.url) in selected]
-            if not songs:
+            stored_songs = [song for song in stored_songs if (song.song_id or song.url) in selected]
+            if not stored_songs:
                 raise ValueError("No requested tracks exist in this playlist")
+        # Downloaders and fallback recovery mutate Song.download_url and other fields.
+        # Keep resolved metadata pristine so clearing a manual source or retrying a job
+        # starts from automatic matching instead of a source chosen by an earlier run.
+        songs = copy.deepcopy(stored_songs)
         if source_overrides:
             known_ids = {song.song_id or song.url for song in songs}
             unknown_ids = set(source_overrides) - known_ids
@@ -967,6 +974,33 @@ class Engine:
         )
         downloader.progress_handler.set_songs(songs)
 
+        try:
+            self._download_windows(
+                playlist_id=playlist_id,
+                output=output,
+                songs=songs,
+                downloader=downloader,
+                threads=threads,
+                throttle_seconds=throttle_seconds,
+                retries=retries,
+                write_m3u=write_m3u,
+            )
+        finally:
+            downloader.progress_handler.close()
+
+    def _download_windows(
+        self,
+        playlist_id: str,
+        output: Path,
+        songs: list[Song],
+        downloader: Downloader,
+        threads: int,
+        throttle_seconds: float,
+        retries: int,
+        write_m3u: bool,
+    ) -> None:
+        """Run bounded download windows and always leave one final record per track."""
+
         results_by_id: dict[str, dict[str, Any]] = {}
         started = time.monotonic()
         worker_count = max(1, min(threads, 4))
@@ -1016,7 +1050,6 @@ class Engine:
 
             self._emit_window_results(window, songs, results_by_id, started)
 
-        downloader.progress_handler.close()
         results = [
             results_by_id[track_id]
             for song in songs
@@ -1073,6 +1106,14 @@ class Engine:
                 results_by_id[track_id] = self._result_record(resolved_song, path)
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
+            for song in batch:
+                track_id = song.song_id or song.url
+                if track_id not in results_by_id:
+                    results_by_id[track_id] = self._result_record(
+                        song,
+                        None,
+                        "Provider returned no result for this track",
+                    )
         return False
 
     @staticmethod

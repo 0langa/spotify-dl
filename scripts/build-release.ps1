@@ -1,8 +1,12 @@
 param(
-    [string]$Version = '1.0.0'
+    [Parameter(Mandatory)]
+    [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')]
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
+$expectedFfmpegVersion = '8.1.2'
+$expectedDenoVersion = '2.8.3'
 $repo = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repo 'artifacts'
 $backendDist = Join-Path $artifacts "backend-build-$PID"
@@ -13,10 +17,17 @@ $release = Join-Path $artifacts 'release'
 $repoPrefix = [IO.Path]::GetFullPath($repo) + [IO.Path]::DirectorySeparatorChar
 $stagingFullPath = [IO.Path]::GetFullPath($staging)
 $backendDistFullPath = [IO.Path]::GetFullPath($backendDist)
-foreach ($temporaryPath in @($stagingFullPath, $backendDistFullPath)) {
+$releaseFullPath = [IO.Path]::GetFullPath($release)
+foreach ($temporaryPath in @($stagingFullPath, $backendDistFullPath, $releaseFullPath)) {
     if (-not $temporaryPath.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Unsafe temporary path: $temporaryPath"
     }
+}
+
+[xml]$appProject = Get-Content -LiteralPath (Join-Path $repo 'src/PlaylistDl.App/PlaylistDl.App.csproj') -Raw
+$declaredVersion = @($appProject.Project.PropertyGroup.Version)[0]
+if ($declaredVersion -ne $Version) {
+    throw "Release version $Version does not match app project version $declaredVersion."
 }
 
 function Assert-NativeSuccess([string]$CommandName) {
@@ -28,7 +39,30 @@ function Assert-NativeSuccess([string]$CommandName) {
 $ffmpeg = (Get-Command ffmpeg -ErrorAction Stop).Source
 $ffprobe = (Get-Command ffprobe -ErrorAction Stop).Source
 $deno = (Get-Command deno -ErrorAction Stop).Source
+$ffmpegOutput = @(& $ffmpeg -version)
+Assert-NativeSuccess 'FFmpeg version query'
+$ffmpegBanner = $ffmpegOutput | Select-Object -First 1
+if ($ffmpegBanner -notmatch '^ffmpeg version (?<version>\d+\.\d+\.\d+)') {
+    throw "Could not parse FFmpeg version from: $ffmpegBanner"
+}
+$ffmpegVersion = $Matches.version
+if ($ffmpegVersion -ne $expectedFfmpegVersion) {
+    throw "FFmpeg $ffmpegVersion is installed; release requires $expectedFfmpegVersion."
+}
+$denoOutput = @(& $deno --version)
+Assert-NativeSuccess 'Deno version query'
+$denoBanner = $denoOutput | Select-Object -First 1
+if ($denoBanner -notmatch '^deno (?<version>\d+\.\d+\.\d+)') {
+    throw "Could not parse Deno version from: $denoBanner"
+}
+$denoVersion = $Matches.version
+if ($denoVersion -ne $expectedDenoVersion) {
+    throw "Deno $denoVersion is installed; release requires $expectedDenoVersion."
+}
 
+if (Test-Path -LiteralPath $release) {
+    Remove-Item -LiteralPath $release -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $backendDist, $pyinstallerWork, $staging, $tools, $release | Out-Null
 
 Push-Location $repo
@@ -45,6 +79,9 @@ try {
         --collect-all spotapi `
         --collect-all pykakasi `
         --collect-all ytmusicapi `
+        --exclude-module fastapi `
+        --exclude-module starlette `
+        --exclude-module uvicorn `
         --distpath $backendDist `
         --workpath $pyinstallerWork `
         --specpath $pyinstallerWork `
@@ -70,6 +107,8 @@ try {
     [ordered]@{
         version = $Version
         backend_version = $backendVersion
+        ffmpeg_version = $ffmpegVersion
+        deno_version = $denoVersion
         files = @($files)
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $staging 'manifest.json') -Encoding utf8
 
@@ -88,6 +127,9 @@ try {
     if (-not (Test-Path -LiteralPath $executable)) {
         throw 'Release executable was not created.'
     }
+
+    Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $release
+    Copy-Item -LiteralPath (Join-Path $repo 'THIRD_PARTY_NOTICES.md') -Destination $release
 
     Get-ChildItem -LiteralPath $release -File |
         Where-Object Name -ne 'SHA256SUMS.txt' |

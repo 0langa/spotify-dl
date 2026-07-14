@@ -7,6 +7,7 @@ namespace PlaylistDl.App.Services;
 
 public sealed class BackendClient : IAsyncDisposable
 {
+    private const int SupportedProtocol = 1;
     private readonly Func<string?> _configuredBackendPath;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly Dictionary<string, TaskCompletionSource<JsonElement>> _pending = [];
@@ -36,6 +37,8 @@ public sealed class BackendClient : IAsyncDisposable
             {
                 return;
             }
+            _process?.Dispose();
+            _process = null;
 
             var (startInfo, overridePath) = CreateStartInfo(allowOverride: true);
             var launchedVersion = await StartProcessAsync(startInfo, cancellationToken);
@@ -70,6 +73,17 @@ public sealed class BackendClient : IAsyncDisposable
         {
             if (message.TryGetProperty("type", out var type) && type.GetString() == "ready")
             {
+                var protocol = message.TryGetProperty("protocol", out var protocolElement) &&
+                    protocolElement.TryGetInt32(out var value)
+                    ? value
+                    : (int?)null;
+                if (!IsSupportedProtocol(protocol))
+                {
+                    ready.TrySetException(new InvalidDataException(
+                        $"Backend protocol {protocol?.ToString() ?? "missing"} is incompatible with client protocol {SupportedProtocol}."));
+                    return;
+                }
+
                 ready.TrySetResult(
                     message.TryGetProperty("version", out var version) ? version.GetString() : null);
             }
@@ -134,9 +148,19 @@ public sealed class BackendClient : IAsyncDisposable
             values[property.Name] = property.Value.Clone();
         }
 
-        await SendAsync(values, cancellationToken);
-        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-        return await completion.Task;
+        try
+        {
+            await SendAsync(values, cancellationToken);
+            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+            return await completion.Task;
+        }
+        finally
+        {
+            lock (_pending)
+            {
+                _pending.Remove(id);
+            }
+        }
     }
 
     public Task SendCommandAsync(string type, object payload, CancellationToken cancellationToken = default)
@@ -153,7 +177,7 @@ public sealed class BackendClient : IAsyncDisposable
 
     private async Task SendAsync(object value, CancellationToken cancellationToken)
     {
-        if (_process is null)
+        if (_process is not { HasExited: false })
         {
             throw new InvalidOperationException("Backend is not running.");
         }
@@ -202,38 +226,55 @@ public sealed class BackendClient : IAsyncDisposable
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
-            using var document = JsonDocument.Parse(line);
-            var root = document.RootElement.Clone();
-            LogEvent(root, line);
-            if (root.TryGetProperty("request_id", out var requestIdElement))
+            try
             {
-                var requestId = requestIdElement.GetString();
-                TaskCompletionSource<JsonElement>? completion = null;
-                if (requestId is not null)
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement.Clone();
+                LogEvent(root, line);
+                var eventType = root.TryGetProperty("type", out var typeElement) &&
+                    typeElement.ValueKind == JsonValueKind.String
+                    ? typeElement.GetString()
+                    : throw new InvalidDataException("Backend event has no string type.");
+                if (root.TryGetProperty("request_id", out var requestIdElement))
                 {
-                    lock (_pending)
+                    var requestId = requestIdElement.GetString();
+                    TaskCompletionSource<JsonElement>? completion = null;
+                    if (requestId is not null)
                     {
-                        if (_pending.Remove(requestId, out var found))
+                        lock (_pending)
                         {
-                            completion = found;
+                            if (_pending.Remove(requestId, out var found))
+                            {
+                                completion = found;
+                            }
+                        }
+                    }
+
+                    if (completion is not null)
+                    {
+                        if (eventType == "error")
+                        {
+                            var message = root.TryGetProperty("message", out var messageElement) &&
+                                messageElement.ValueKind == JsonValueKind.String
+                                ? messageElement.GetString()
+                                : "Backend returned an error without a message.";
+                            completion.TrySetException(new InvalidOperationException(message));
+                        }
+                        else
+                        {
+                            completion.TrySetResult(root);
                         }
                     }
                 }
 
-                if (completion is not null)
-                {
-                    if (root.GetProperty("type").GetString() == "error")
-                    {
-                        completion.TrySetException(new InvalidOperationException(root.GetProperty("message").GetString()));
-                    }
-                    else
-                    {
-                        completion.TrySetResult(root);
-                    }
-                }
+                EventReceived?.Invoke(this, root);
             }
-
-            EventReceived?.Invoke(this, root);
+            catch (Exception exception) when (
+                exception is JsonException or InvalidDataException or InvalidOperationException or
+                KeyNotFoundException)
+            {
+                _runLog.Write("protocol", $"Ignored malformed backend event: {exception.Message}");
+            }
         }
     }
 
@@ -313,6 +354,8 @@ public sealed class BackendClient : IAsyncDisposable
         Version.TryParse(launchedVersion, out var launched) &&
         Version.TryParse(bundledVersion, out var bundled) &&
         launched < bundled;
+
+    public static bool IsSupportedProtocol(int? protocol) => protocol == SupportedProtocol;
 
     public static string? SelectBackendOverride(string? configuredPath, string? environmentPath)
     {

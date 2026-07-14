@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +15,30 @@ from playlistdl_backend.engine import (
     effective_bitrate,
     validate_source_url,
 )
+
+
+def test_engine_import_does_not_require_unused_web_server_modules() -> None:
+    script = """
+import importlib.abc
+import sys
+
+class BlockServerModules(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition('.')[0] in {'fastapi', 'starlette', 'uvicorn'}:
+            raise ModuleNotFoundError(fullname)
+        return None
+
+sys.meta_path.insert(0, BlockServerModules())
+import playlistdl_backend.engine
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -186,6 +212,18 @@ def test_download_rejects_unsupported_format(engine: Engine) -> None:
 
     with pytest.raises(ValueError, match="Unsupported audio format"):
         engine.download("known", "out", audio_format="wma")
+
+
+def test_frozen_runtime_reports_excluded_server_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        engine_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "fastapi" else None,
+    )
+
+    assert engine_module.find_bundled_server_modules() == ["fastapi"]
 
 
 def test_build_output_paths_creates_sanitized_collection_folder(tmp_path) -> None:

@@ -37,6 +37,10 @@ public sealed class JobStore
         {
             return null;
         }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     public void Save(SavedJob job)

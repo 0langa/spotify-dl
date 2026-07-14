@@ -105,10 +105,7 @@ def test_start_forwards_reliability_options(monkeypatch) -> None:
 
 
 def test_shutdown_stops_read_loop_so_process_can_exit() -> None:
-    source = io.StringIO(
-        '{"id":"bye","type":"shutdown"}\n'
-        '{"id":"after","type":"ping"}\n'
-    )
+    source = io.StringIO('{"id":"bye","type":"shutdown"}\n{"id":"after","type":"ping"}\n')
     target = io.StringIO()
 
     Bridge(source, target).run()

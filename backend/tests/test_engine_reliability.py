@@ -137,12 +137,13 @@ def test_dominant_failure_class_prefers_most_actionable() -> None:
 class _FakeProgressHandler:
     def __init__(self, simple_tui: bool = True, update_callback: Any = None) -> None:
         self.update_callback = update_callback
+        self.closed = False
 
     def set_songs(self, songs: Any) -> None:
         self.songs = songs
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 class _FakeDownloader:
@@ -268,6 +269,62 @@ def test_download_blank_ytdlp_args_normalize_to_none(download_env: dict[str, Any
     assert _FakeDownloader.last_instance.settings["yt_dlp_args"] is None
 
 
+def test_download_reports_provider_omissions_as_failures(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OmittingDownloader(_FakeDownloader):
+        def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+            return []
+
+    monkeypatch.setattr(engine_module, "Downloader", OmittingDownloader)
+    engine: Engine = download_env["engine"]
+
+    engine.download("job", download_env["out"], retries=0)
+
+    completion = _last_completion(download_env["events"])
+    assert len(completion["results"]) == 2
+    assert all(result["success"] is False for result in completion["results"])
+    assert all("no result" in result["error"].lower() for result in completion["results"])
+
+
+def test_download_closes_progress_handler_when_cancelled(
+    download_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = download_env["engine"]
+    songs = [_fake_song(f"Song {index}", index) for index in range(1, 11)]
+    engine._songs["job"] = songs  # type: ignore[assignment]
+    _FakeDownloader.script = {song.song_id: [(f"/out/{song.song_id}.mp3", None)] for song in songs}
+
+    class CancellingDownloader(_FakeDownloader):
+        def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+            result = super().download_multiple_songs(batch)
+            engine.cancel()
+            return result
+
+    monkeypatch.setattr(engine_module, "Downloader", CancellingDownloader)
+
+    engine.download("job", download_env["out"], threads=2, retries=0)
+
+    assert any(event["type"] == "job_cancelled" for event in download_env["events"])
+    assert _FakeDownloader.last_instance is not None
+    assert _FakeDownloader.last_instance.progress_handler.closed is True
+
+
+def test_download_does_not_persist_manual_source_override(download_env: dict[str, Any]) -> None:
+    engine: Engine = download_env["engine"]
+    song = download_env["songs"][0]
+    engine._songs["job"] = [song]  # type: ignore[assignment]
+    _FakeDownloader.script = {song.song_id: [("/out/one.mp3", None)]}
+
+    engine.download(
+        "job",
+        download_env["out"],
+        source_overrides={song.song_id: "https://www.youtube.com/watch?v=manual"},
+    )
+
+    assert song.download_url is None
+
+
 def test_download_uses_rolling_windows_larger_than_worker_count(
     download_env: dict[str, Any],
 ) -> None:
@@ -293,6 +350,7 @@ def test_download_reinitialization_never_contacts_spotify() -> None:
         song_id="id-1",
         list_position=4,
     )
+
     class Client:
         calls = 0
 
@@ -465,7 +523,7 @@ def test_download_tries_ranked_relevant_fallback_after_source_failure(
     assert result["success"] is True
     assert result["fallback_used"] is True
     assert result["source_url"].endswith("fallback")
-    assert song.download_url.endswith("fallback")
+    assert song.download_url is None
 
 
 def test_download_tries_alternate_after_age_restricted_source(

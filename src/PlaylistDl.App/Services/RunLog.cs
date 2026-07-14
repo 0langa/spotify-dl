@@ -17,15 +17,13 @@ public sealed class RunLog
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PlaylistDL",
             "logs");
-        Directory.CreateDirectory(directory);
-        Path = System.IO.Path.Combine(
-            directory,
-            $"playlistdl-{started:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log");
-        File.WriteAllText(
-            Path,
-            $"{started:O} [app] Playlist DL session started{Environment.NewLine}",
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        PruneOldLogs(directory, started);
+        var fileName = $"playlistdl-{started:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log";
+        Path = TryInitialize(directory, fileName, started)
+            ?? TryInitialize(
+                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PlaylistDL", "logs"),
+                fileName,
+                started)
+            ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), fileName);
     }
 
     public string Path { get; }
@@ -48,6 +46,29 @@ public sealed class RunLog
             {
                 // Provider work must continue when security software changes file access.
             }
+        }
+    }
+
+    private static string? TryInitialize(
+        string directory,
+        string fileName,
+        DateTimeOffset started)
+    {
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var path = System.IO.Path.Combine(directory, fileName);
+            File.WriteAllText(
+                path,
+                $"{started:O} [app] Playlist DL session started{Environment.NewLine}",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            PruneOldLogs(directory, started);
+            return path;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 

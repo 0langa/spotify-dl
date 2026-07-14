@@ -26,7 +26,13 @@ try {
     if (-not $readyTask.Wait(30000)) {
         throw 'Frozen backend did not become ready within 30 seconds.'
     }
-    $ready = $readyTask.Result | ConvertFrom-Json
+    $readyLine = $readyTask.Result
+    if ([string]::IsNullOrWhiteSpace($readyLine)) {
+        $process.WaitForExit(5000) | Out-Null
+        $stderr = if ($process.HasExited) { $process.StandardError.ReadToEnd() } else { '' }
+        throw "Frozen backend exited before its ready handshake. $stderr"
+    }
+    $ready = $readyLine | ConvertFrom-Json
     if ($ready.type -ne 'ready') {
         throw "Unexpected frozen backend handshake: $($ready.type)"
     }
@@ -53,10 +59,22 @@ try {
         throw "Frozen backend provider resource smoke failed: $($runtime.message ?? $runtime.type)"
     }
     Write-Host 'Frozen backend provider resources loaded.'
+
+    $process.StandardInput.WriteLine('{"id":"release-shutdown","type":"shutdown"}')
+    $process.StandardInput.Flush()
+    $process.StandardInput.Close()
+    if (-not $process.WaitForExit(10000)) {
+        throw 'Frozen backend did not exit cleanly after shutdown.'
+    }
+    if ($process.ExitCode -ne 0) {
+        $stderr = $process.StandardError.ReadToEnd()
+        throw "Frozen backend exited $($process.ExitCode) after shutdown. $stderr"
+    }
 }
 finally {
     if (-not $process.HasExited) {
         $process.Kill($true)
+        $process.WaitForExit(5000) | Out-Null
     }
     $process.Dispose()
     if ($preparedBackend.CleanupRoot -and (Test-Path -LiteralPath $preparedBackend.CleanupRoot)) {

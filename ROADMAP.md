@@ -1,8 +1,12 @@
 # Playlist DL roadmap
 
-Current baseline: v1.9.1. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
+Current baseline: v2.0.0. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
 
-## Next priorities
+## Finished-for-now baseline
+
+Version 2.0.0 is feature-complete for current Windows personal-use scope. Maintenance should prioritize provider compatibility, security updates, bug fixes, and preservation of release gates. Network providers remain external dependencies; their availability cannot be guaranteed by Playlist DL.
+
+## Optional future work
 
 1. Verified in-app updater
    - Download release executable and `SHA256SUMS.txt`.
@@ -30,8 +34,11 @@ Current baseline: v1.9.1. Completed milestones live in [CHANGELOG.md](CHANGELOG.
 
 ## Standing release gates
 
-- `uv run --project backend ruff check backend`
-- `uv run --project backend pytest`
+- `uv run --project backend --extra dev ruff check backend`
+- `uv run --project backend --extra dev ruff format --check backend`
+- `uv run --project backend --extra dev python -m pytest --cov=playlistdl_backend --cov-fail-under=80`
+- `./scripts/audit-python-dependencies.ps1`
+- `dotnet format PlaylistDl.slnx --verify-no-changes`
 - `dotnet build PlaylistDl.slnx --configuration Release`
 - `dotnet test PlaylistDl.slnx --configuration Release --no-build`
 - `./scripts/verify-release.ps1`

@@ -35,8 +35,19 @@ public sealed class LibraryStore
             return [];
         }
 
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(_directory, "*.json");
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+
         var jobs = new List<SavedJob>();
-        foreach (var file in Directory.EnumerateFiles(_directory, "*.json"))
+        foreach (var file in files)
         {
             try
             {
@@ -51,6 +62,9 @@ public sealed class LibraryStore
                 // A corrupt entry must not take the whole library down.
             }
             catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
             {
             }
         }
@@ -72,6 +86,10 @@ public sealed class LibraryStore
             return null;
         }
         catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
         {
             return null;
         }

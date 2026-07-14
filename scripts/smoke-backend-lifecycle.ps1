@@ -27,7 +27,13 @@ try {
             if (-not $readyTask.Wait(30000)) {
                 throw "Iteration ${iteration}: backend did not become ready within 30 seconds."
             }
-            $ready = $readyTask.Result | ConvertFrom-Json
+            $readyLine = $readyTask.Result
+            if ([string]::IsNullOrWhiteSpace($readyLine)) {
+                $process.WaitForExit(5000) | Out-Null
+                $stderr = if ($process.HasExited) { $process.StandardError.ReadToEnd() } else { '' }
+                throw "Iteration ${iteration}: backend exited before its ready handshake. $stderr"
+            }
+            $ready = $readyLine | ConvertFrom-Json
             if ($ready.type -ne 'ready') {
                 throw "Iteration ${iteration}: unexpected handshake '$($ready.type)'."
             }

@@ -1,13 +1,13 @@
 [project]
 name = "playlistdl-backend"
-version = "0.9.1"
+version = "1.0.0"
 description = "Structured spotDL backend for Playlist DL"
 requires-python = ">=3.11,<3.15"
 dependencies = [
   "requests>=2.32,<3",
   "spotdl==4.5.0",
   "spotipyFree==1.9.13",
-  "yt-dlp[default]==2026.6.9",
+  "yt-dlp[default]==2026.7.4",
 ]
 
 [project.scripts]

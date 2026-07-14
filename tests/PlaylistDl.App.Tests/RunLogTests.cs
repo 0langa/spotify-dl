@@ -9,6 +9,18 @@ public sealed class RunLogTests : IDisposable
         Path.GetTempPath(), $"playlistdl-log-tests-{Guid.NewGuid():N}");
 
     [Fact]
+    public void UnavailableLogDirectoryNeverBlocksStartup()
+    {
+        Directory.CreateDirectory(_directory);
+        var fileInsteadOfDirectory = Path.Combine(_directory, "blocked");
+        File.WriteAllText(fileInsteadOfDirectory, "not a directory");
+
+        var log = new RunLog(fileInsteadOfDirectory);
+
+        log.Write("app", "still running");
+    }
+
+    [Fact]
     public void WritesTimestampedDiagnosticsAndStructuredTrackResults()
     {
         var log = new RunLog(_directory, new DateTimeOffset(2026, 7, 13, 20, 0, 0, TimeSpan.Zero));
