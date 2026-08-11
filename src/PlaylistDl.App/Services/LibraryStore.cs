@@ -120,9 +120,14 @@ public sealed class LibraryStore
     }
 
     /// <summary>One-time import of the 1.2.x single last-job file into the library.</summary>
+    /// <remarks>
+    /// Only runs before the library exists. Re-running it would resurrect entries the
+    /// user deleted, because the last-job file still points at the deleted source.
+    /// </remarks>
     public void MigrateFromLastJob(SavedJob? lastJob)
     {
-        if (lastJob is null || string.IsNullOrWhiteSpace(lastJob.SourceUrl))
+        if (lastJob is null || string.IsNullOrWhiteSpace(lastJob.SourceUrl) ||
+            Directory.Exists(_directory))
         {
             return;
         }

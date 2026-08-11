@@ -56,13 +56,28 @@ def _duration_seconds(row: dict[str, Any]) -> int:
     milliseconds = _value(row, "duration (ms)", "duration_ms", "durationms")
     seconds = _value(row, "duration_seconds", "duration (s)", "duration")
     try:
-        return (
-            max(0, round(float(milliseconds) / 1000))
-            if milliseconds
-            else max(0, round(float(seconds)))
-        )
+        if milliseconds:
+            return max(0, round(float(milliseconds) / 1000))
+        if not seconds:
+            return 0
+        # Exported playlists commonly write mm:ss or h:mm:ss instead of a number.
+        if ":" in seconds:
+            return _clock_duration_seconds(seconds)
+        return max(0, round(float(seconds)))
     except ValueError as exc:
-        raise ValueError("Track duration must be a number") from exc
+        raise ValueError(
+            "Track duration must be a number of seconds, milliseconds, or mm:ss"
+        ) from exc
+
+
+def _clock_duration_seconds(value: str) -> int:
+    parts = value.split(":")
+    if len(parts) > 3:
+        raise ValueError(f"Unsupported duration: {value}")
+    total = 0
+    for part in parts:
+        total = total * 60 + int(part.strip())
+    return max(0, total)
 
 
 def _song_from_row(row_value: Any, position: int) -> Song:

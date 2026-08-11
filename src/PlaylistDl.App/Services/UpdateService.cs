@@ -37,12 +37,28 @@ public sealed class UpdateService
         var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(body, cancellationToken: cancellationToken)
             ?? throw new InvalidDataException("GitHub returned an empty release response.");
         var latest = ParseVersion(release.TagName);
-        if (latest <= currentVersion || !Uri.TryCreate(release.HtmlUrl, UriKind.Absolute, out var page))
+        if (latest <= currentVersion || !TryParseReleasePage(release.HtmlUrl, out var page))
         {
             return null;
         }
 
         return new UpdateResult(latest, release.TagName, page);
+    }
+
+    /// <summary>Only an https github.com release page is ever handed to the shell.</summary>
+    public static bool TryParseReleasePage(string? value, out Uri page)
+    {
+        page = null!;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var candidate) ||
+            candidate.Scheme != Uri.UriSchemeHttps ||
+            !(candidate.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+                candidate.Host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        page = candidate;
+        return true;
     }
 
     /// <summary>Gate for the silent startup check: enabled and not checked within ~a day.</summary>

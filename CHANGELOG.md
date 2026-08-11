@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 2.0.1 - 2026-08-11
+
+### Fixed
+
+- Queue runs now become the current source, so saving, resuming, and one-click retry after a queued job address the job that actually ran instead of the previously analyzed source.
+- Source intake (Analyze, Import, Library, Resume) is disabled while a download runs, so a running job can no longer be orphaned by loading another source.
+- Playlist `.m3u8` export merges with the existing file instead of replacing it, so a retry, Sync, or partial selection no longer shrinks a complete playlist to the tracks of the last job. Entries stay in source order, listings whose file is gone are dropped, and a track downloaded again under another format or naming preset replaces its earlier entry instead of being listed twice.
+- A track that a source lists twice now gets its own row, result, and output file instead of collapsing into one record that never completes.
+- A cancellation sent while a job is still starting is no longer discarded by the worker thread.
+- Backend shutdown waits for the download worker, so stopping the app or a job no longer leaves converter and downloader child processes behind.
+- Network diagnosis and candidate search no longer block the backend request loop, so Cancel stays responsive while they run.
+- A provider-wide YouTube block now trips a circuit breaker: retries and alternate-source searches stop, and the actionable hint appears during the job instead of hours later.
+- Track manifests accept `mm:ss` and `h:mm:ss` durations, and an unparsable duration reports what is accepted.
+- Long source names are clamped and reserved Windows device names escaped, so a long playlist title no longer fails every download with a path error.
+- A locked `settings.json` is retried instead of silently resetting every setting, and an unreadable file is preserved as `settings.json.corrupt` rather than overwritten with defaults.
+- Settings writes that fail with an I/O or access error report in the status bar instead of terminating the app.
+- Deleting a job from the Library is no longer undone by the legacy last-job migration on the next start.
+- Closing the window waits for the backend session to end instead of racing dispatcher shutdown.
+- The update check only opens `https://github.com` release pages, and a malformed release URL is ignored.
+- Helper-tool hashes are verified against the manifest embedded in the executable, so a rewritten manifest in the extracted tools folder can no longer certify tampered helpers.
+
+### Changed
+
+- Selecting all tracks, restoring a saved job, and per-track progress updates no longer rescan the whole track list, keeping thousand-track playlists responsive.
+- Select all now reflects the filtered rows it applies to.
+- Run logs record resolve, candidate, and job-completion summaries instead of whole payloads.
+- Resolved sources are bounded to the 16 most recently used per backend session.
+- The failure banner, and with it the Diagnose button, also appears when a free-text search fails.
+
+### Release engineering
+
+- CI and release workflows fail on any failing step; multi-command PowerShell steps no longer report success when only the last command passed.
+- Backend tests run from an explicit path so the backend pytest configuration always applies.
+
 ## 2.0.0 - 2026-07-14
 
 - Declared backend protocol 1 stable and reject alternate backends with a missing or incompatible protocol before requests can hang or corrupt UI state.

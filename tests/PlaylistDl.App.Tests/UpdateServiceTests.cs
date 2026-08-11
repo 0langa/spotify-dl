@@ -39,6 +39,28 @@ public sealed class UpdateServiceTests
         Assert.Null(await new UpdateService(client).CheckAsync(new Version(1, 2, 0)));
     }
 
+    [Theory]
+    [InlineData("https://github.com/0langa/spotify-dl/releases/tag/v9.9.9", true)]
+    [InlineData("https://api.github.com/repos/0langa/spotify-dl", true)]
+    [InlineData("http://github.com/0langa/spotify-dl/releases", false)]
+    [InlineData("https://github.com.example.com/releases", false)]
+    [InlineData("javascript:alert(1)", false)]
+    [InlineData("file:///C:/Windows/System32/cmd.exe", false)]
+    [InlineData("", false)]
+    public void OnlyHttpsGitHubPagesAreAccepted(string value, bool expected)
+    {
+        Assert.Equal(expected, UpdateService.TryParseReleasePage(value, out _));
+    }
+
+    [Fact]
+    public async Task ReleaseWithAnUnsafePageUrlIsIgnored()
+    {
+        using var client = new HttpClient(new JsonHandler(
+            """{"tag_name":"v9.9.9","html_url":"javascript:alert(1)"}"""));
+
+        Assert.Null(await new UpdateService(client).CheckAsync(new Version(1, 0, 0)));
+    }
+
     private sealed class JsonHandler(string json) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(

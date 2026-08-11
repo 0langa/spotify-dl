@@ -24,10 +24,14 @@ public partial class MainWindow : Window
     private readonly ICollectionView _tracksView;
     private PlaylistInfo? _playlist;
     private bool _jobRunning;
+    private bool _shuttingDown;
+    private bool _closeApproved;
+    private bool _bulkSelectionUpdate;
     private bool _syncingSelectAll;
     private bool _syncingQuickFormat;
     private bool _uiReady;
     private HashSet<string> _activeTrackIds = [];
+    private readonly Dictionary<string, TrackItem> _tracksById = [];
     private readonly List<TrackItem> _failedTracks = [];
     private readonly DownloadQueue _queue = new();
     private bool _queueRunning;
@@ -85,13 +89,54 @@ public partial class MainWindow : Window
         {
             ResumeButton.ToolTip = $"Resume {_savedJob.SourceName} from {_savedJob.UpdatedAt.LocalDateTime:g}";
         }
-        Closing += (_, _) => _sourceOperationCts?.Cancel();
-        Closed += async (_, _) =>
+        if (_settingsService.LastLoadFailed)
         {
-            SaveCurrentJob();
-            await _backend.DisposeAsync();
-        };
+            StatusText.Text =
+                "Saved settings could not be read and defaults are in use — " +
+                "the unreadable file is kept as settings.json.unreadable when settings are saved.";
+        }
+        Closing += MainWindow_Closing;
         Loaded += async (_, _) => await AutoCheckForUpdatesAsync();
+    }
+
+    /// <summary>Stops the backend before the window really closes.</summary>
+    /// <remarks>
+    /// Shutdown work started in <c>Closed</c> can be cut off by dispatcher shutdown and
+    /// leave the backend and its converter children running, so the close is deferred
+    /// until the backend session has ended.
+    /// </remarks>
+    private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        _sourceOperationCts?.Cancel();
+        if (_closeApproved)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        if (_shuttingDown)
+        {
+            // Clicking close again must not abandon the shutdown already in flight.
+            return;
+        }
+
+        _shuttingDown = true;
+        // No further input while the session is being torn down: a click here would
+        // otherwise relaunch the backend that was just stopped.
+        IsEnabled = false;
+        StatusText.Text = "Closing — stopping backend…";
+        SaveCurrentJob();
+        try
+        {
+            await _backend.DisposeAsync();
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // The window must close even if the backend refuses to stop cleanly.
+        }
+
+        _closeApproved = true;
+        Close();
     }
 
     private async Task AutoCheckForUpdatesAsync()
@@ -106,7 +151,7 @@ public partial class MainWindow : Window
             var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
             _availableUpdate = await _updateService.CheckAsync(current);
             _settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
-            _settingsService.Save(_settings);
+            TrySaveSettings();
             if (_availableUpdate is not null)
             {
                 UpdateButton.Content = $"Get {_availableUpdate.Tag}";
@@ -132,7 +177,12 @@ public partial class MainWindow : Window
             || track.Album.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void FilterBox_TextChanged(object sender, TextChangedEventArgs e) => _tracksView.Refresh();
+    private void FilterBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _tracksView.Refresh();
+        // Select all describes the filtered rows, so a new filter changes its state.
+        UpdateSelectionUi();
+    }
 
     private void SelectAllBox_Toggled(object sender, RoutedEventArgs e)
     {
@@ -142,15 +192,27 @@ public partial class MainWindow : Window
         }
 
         var selected = SelectAllBox.IsChecked == true;
-        foreach (var track in _tracksView.Cast<TrackItem>().ToList())
+        // One selection pass instead of one full recount per track keeps large
+        // playlists responsive; the UI is refreshed once at the end.
+        _bulkSelectionUpdate = true;
+        try
         {
-            track.IsSelected = selected;
+            foreach (var track in _tracksView.Cast<TrackItem>().ToList())
+            {
+                track.IsSelected = selected;
+            }
         }
+        finally
+        {
+            _bulkSelectionUpdate = false;
+        }
+
+        UpdateSelectionUi();
     }
 
     private void Track_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(TrackItem.IsSelected))
+        if (e.PropertyName == nameof(TrackItem.IsSelected) && !_bulkSelectionUpdate)
         {
             UpdateSelectionUi();
         }
@@ -158,9 +220,31 @@ public partial class MainWindow : Window
 
     private void UpdateSelectionUi()
     {
-        var selected = Tracks.Count(track => track.IsSelected);
+        var selected = 0;
+        var visible = 0;
+        var visibleSelected = 0;
+        foreach (var track in Tracks)
+        {
+            if (track.IsSelected)
+            {
+                selected++;
+            }
+        }
+
+        // Select all applies to the filtered rows, so its state must describe them too.
+        foreach (var track in _tracksView.Cast<TrackItem>())
+        {
+            visible++;
+            if (track.IsSelected)
+            {
+                visibleSelected++;
+            }
+        }
+
         _syncingSelectAll = true;
-        SelectAllBox.IsChecked = selected == Tracks.Count ? true : selected == 0 ? false : null;
+        SelectAllBox.IsChecked = visible > 0 && visibleSelected == visible
+            ? true
+            : visibleSelected == 0 ? false : null;
         _syncingSelectAll = false;
         DownloadButton.IsEnabled = (selected > 0 && !_jobRunning && _playlist is not null) ||
             (!_queue.IsEmpty && !_jobRunning);
@@ -169,6 +253,24 @@ public partial class MainWindow : Window
         {
             PlaylistSummary.Text = $"{SourceLabel()} · {selected}/{Tracks.Count} tracks selected · {_playlist.Owner}";
         }
+    }
+
+    /// <summary>Retry stays available only when a job is not already using the backend.</summary>
+    private void UpdateRetryUi()
+    {
+        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RetryFailedButton.IsEnabled = _failedTracks.Count > 0 && !_jobRunning;
+        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+    }
+
+    /// <summary>Source intake stays disabled while a job owns the backend session.</summary>
+    private void UpdateSourceIntakeAvailability()
+    {
+        AnalyzeButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
+        ImportManifestButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
+        LibraryButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
+        ResumeButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
+        UpdateRetryUi();
     }
 
     private string SourceLabel() => _playlist?.SourceType switch
@@ -203,6 +305,10 @@ public partial class MainWindow : Window
         }
 
         using var operation = BeginSourceOperation(isSpotifyUrl ? "Resolving playlist…" : "Searching YouTube Music…");
+        if (operation is null)
+        {
+            return;
+        }
         try
         {
             if (isSpotifyUrl)
@@ -226,11 +332,11 @@ public partial class MainWindow : Window
             var userMessage = UserErrorMessages.ForSourceResolution(ex, isSpotifyUrl);
             MessageBox.Show(this, userMessage, isSpotifyUrl ? "Playlist failed" : "Search failed", MessageBoxButton.OK, MessageBoxImage.Error);
             StatusText.Text = isSpotifyUrl ? "Playlist resolution failed" : "Search failed";
-            if (isSpotifyUrl)
-            {
-                ShowFailureBanner(
-                    userMessage + " You can also type an artist and title to search, or import a CSV/JSON manifest.");
-            }
+            // The banner carries the Diagnose button, so it must also appear for the
+            // search path — a blocked backend fails both intakes the same way.
+            ShowFailureBanner(isSpotifyUrl
+                ? userMessage + " You can also type an artist and title to search, or import a CSV/JSON manifest."
+                : userMessage + " You can also paste a Spotify link or import a CSV/JSON manifest.");
         }
         finally
         {
@@ -323,10 +429,23 @@ public partial class MainWindow : Window
 
         _queueRunning = true;
         _activeQueuedJob = job;
-        Tracks.ReplaceAll(job.Tracks);
+        // The queued job becomes the current source: saving, retrying, and the track
+        // grid must all describe the job that is actually running.
+        _playlist = new PlaylistInfo
+        {
+            Id = job.PlaylistId,
+            Name = job.Name,
+            SourceUrl = job.SourceUrl,
+            SourceType = job.SourceType,
+            Owner = "queued job",
+        };
+        PlaylistUrlBox.Text = job.SourceUrl;
+        OutputDirectoryBox.Text = job.OutputDirectory;
+        SetTracks(job.AllTracks);
         PlaylistTitle.Text = job.Name;
         _tracksView.Refresh();
         UpdateQueueUi();
+        UpdateSelectionUi();
         StatusText.Text = _queue.IsEmpty
             ? $"Queue: downloading \"{job.Name}\""
             : $"Queue: downloading \"{job.Name}\" — {_queue.Count} more waiting";
@@ -362,11 +481,13 @@ public partial class MainWindow : Window
 
             Directory.CreateDirectory(outputDirectory);
             _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
-            RetryFailedButton.Visibility = Visibility.Collapsed;
+            // This job supersedes the previous failure set; results repopulate it.
+            _failedTracks.Clear();
             _jobRunning = true;
             _jobProgressText = null;
-            AnalyzeButton.IsEnabled = false;
+            UpdateSourceIntakeAvailability();
             DownloadButton.IsEnabled = false;
+            AddToQueueButton.IsEnabled = false;
             CancelButton.IsEnabled = true;
             StatusText.Text = "Starting downloads…";
             HideFailureBanner();
@@ -402,7 +523,7 @@ public partial class MainWindow : Window
             _queueRunning = false;
             _queue.Clear();
             _activeQueuedJob = null;
-            AnalyzeButton.IsEnabled = true;
+            UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
             UpdateQueueUi();
             UpdateSelectionUi();
@@ -434,7 +555,7 @@ public partial class MainWindow : Window
             _queueRunning = false;
             _queue.Clear();
             _activeQueuedJob = null;
-            AnalyzeButton.IsEnabled = true;
+            UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
             UpdateQueueUi();
             UpdateSelectionUi();
@@ -463,7 +584,7 @@ public partial class MainWindow : Window
                 {
                     OutputDirectoryBox.Text = dialog.FolderName;
                     _settings.OutputDirectory = dialog.FolderName;
-                    _settingsService.Save(_settings);
+                    TrySaveSettings();
                 }
 
                 return;
@@ -536,15 +657,21 @@ public partial class MainWindow : Window
         _activeTrackIds.Clear();
         _failedTracks.Clear();
         _queue.Clear();
+        // The restarted backend no longer owns the previous job, so the job state must
+        // not stay armed — otherwise Cancel and Analyze remain locked with no job left.
+        _jobRunning = false;
+        _jobProgressText = null;
         _queueRunning = false;
         _activeQueuedJob = null;
-        Tracks.ReplaceAll(Array.Empty<TrackItem>());
+        SetTracks([]);
         PlaylistTitle.Text = "No source loaded";
         PlaylistSummary.Text = "Analyze a source or resume a saved job";
         RetryFailedButton.Visibility = Visibility.Collapsed;
         OverallProgress.Value = 0;
+        CancelButton.IsEnabled = false;
         UpdateQueueUi();
         UpdateSelectionUi();
+        UpdateSourceIntakeAvailability();
         StatusText.Text = status;
     }
 
@@ -570,8 +697,25 @@ public partial class MainWindow : Window
         }
 
         _settings.Format = format;
-        _settingsService.Save(_settings);
-        StatusText.Text = $"Audio format set to {format.ToUpperInvariant()}";
+        if (TrySaveSettings())
+        {
+            StatusText.Text = $"Audio format set to {format.ToUpperInvariant()}";
+        }
+    }
+
+    /// <summary>Persist settings without letting a locked file take the app down.</summary>
+    private bool TrySaveSettings()
+    {
+        try
+        {
+            _settingsService.Save(_settings);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StatusText.Text = $"Settings could not be saved: {exception.Message}";
+            return false;
+        }
     }
 
     private void NotifyJobFinished()
@@ -654,11 +798,19 @@ public partial class MainWindow : Window
                 // the full large-playlist snapshot for every provider callback.
                 SaveCurrentJob();
             }
+            else if (type == "job_warning")
+            {
+                var hint = JobResults.ParseFailure(message).FailureHint;
+                if (!string.IsNullOrWhiteSpace(hint))
+                {
+                    ShowFailureBanner(hint);
+                }
+            }
             else if (type is "job_completed" or "job_cancelled")
             {
                 _jobRunning = false;
                 _jobProgressText = null;
-                AnalyzeButton.IsEnabled = true;
+                UpdateSourceIntakeAvailability();
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
                 if (type == "job_completed")
@@ -702,7 +854,7 @@ public partial class MainWindow : Window
                 _queueRunning = false;
                 _queue.Clear();
                 UpdateQueueUi();
-                AnalyzeButton.IsEnabled = true;
+                UpdateSourceIntakeAvailability();
                 CancelButton.IsEnabled = false;
                 UpdateSelectionUi();
                 StatusText.Text = "Download stopped — progress saved. Open Run log for exact details.";
@@ -718,7 +870,7 @@ public partial class MainWindow : Window
             _queueRunning = false;
             _queue.Clear();
             UpdateQueueUi();
-            AnalyzeButton.IsEnabled = true;
+            UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
             StatusText.Text = $"Internal error while processing downloads: {ex.Message}";
             _activeQueuedJob = null;
@@ -763,9 +915,7 @@ public partial class MainWindow : Window
             HideFailureBanner();
         }
 
-        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
-        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+        UpdateRetryUi();
         var succeeded = results.Count(result => result.Success);
         var summary = _failedTracks.Count == 0
             ? $"Downloads complete — {succeeded} done"
@@ -803,9 +953,7 @@ public partial class MainWindow : Window
                 _failedTracks.Add(track);
             }
         }
-        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
-        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+        UpdateRetryUi();
     }
 
     private static string FormatDuration(int seconds)
@@ -820,8 +968,28 @@ public partial class MainWindow : Window
             : $"{Math.Max(1, duration.Minutes)}m";
     }
 
+    /// <summary>Replaces the visible tracks and the lookup used by backend events.</summary>
+    private void SetTracks(IReadOnlyList<TrackItem> tracks)
+    {
+        Tracks.ReplaceAll(tracks);
+        _tracksById.Clear();
+        foreach (var track in tracks)
+        {
+            if (!string.IsNullOrEmpty(track.Id))
+            {
+                _tracksById[track.Id] = track;
+            }
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                _tracksById.TryAdd(track.SpotifyUrl, track);
+            }
+        }
+    }
+
+    // Progress events arrive per track and per provider callback, so this lookup must
+    // not scan a thousand-track collection every time.
     private TrackItem? FindTrack(string trackId) =>
-        Tracks.FirstOrDefault(item => item.Id == trackId || item.SpotifyUrl == trackId);
+        _tracksById.TryGetValue(trackId, out var track) ? track : null;
 
     private void ShowFailureBanner(string message)
     {
@@ -896,27 +1064,58 @@ public partial class MainWindow : Window
 
     private void UpdateOverallProgress()
     {
-        var jobTracks = Tracks.Where(track => _activeTrackIds.Contains(track.Id)).ToList();
-        if (jobTracks.Count == 0)
+        // One pass: this runs for every provider progress callback of every track.
+        var count = 0;
+        var total = 0L;
+        var complete = 0;
+        var restrictToJob = _activeTrackIds.Count > 0;
+        foreach (var track in Tracks)
         {
-            jobTracks = [.. Tracks];
+            if (restrictToJob && !_activeTrackIds.Contains(track.Id))
+            {
+                continue;
+            }
+            count++;
+            total += track.Progress;
+            if (track.Progress >= 100)
+            {
+                complete++;
+            }
         }
 
-        OverallProgress.Value = jobTracks.Count == 0 ? 0 : jobTracks.Average(track => track.Progress);
+        if (count == 0)
+        {
+            foreach (var track in Tracks)
+            {
+                count++;
+                total += track.Progress;
+                if (track.Progress >= 100)
+                {
+                    complete++;
+                }
+            }
+        }
+
+        OverallProgress.Value = count == 0 ? 0 : (double)total / count;
         if (_jobProgressText is not null)
         {
             StatusText.Text = _jobProgressText;
             return;
         }
-        var complete = jobTracks.Count(track => track.Progress >= 100);
-        StatusText.Text = $"{complete}/{jobTracks.Count} complete";
+        StatusText.Text = $"{complete}/{count} complete";
     }
 
-    private CancellationTokenSource BeginSourceOperation(string status)
+    private CancellationTokenSource? BeginSourceOperation(string status)
     {
-        _sourceOperationCts?.Dispose();
+        if (_sourceOperationCts is not null)
+        {
+            // A second source request would leave the first one's result to overwrite
+            // whatever the user sees next; keep exactly one in flight.
+            return null;
+        }
+
         _sourceOperationCts = new CancellationTokenSource();
-        AnalyzeButton.IsEnabled = false;
+        UpdateSourceIntakeAvailability();
         CancelButton.IsEnabled = true;
         StatusText.Text = status;
         return _sourceOperationCts;
@@ -929,7 +1128,7 @@ public partial class MainWindow : Window
             _sourceOperationCts = null;
         }
         operation.Dispose();
-        AnalyzeButton.IsEnabled = true;
+        UpdateSourceIntakeAvailability();
         if (!_jobRunning)
         {
             CancelButton.IsEnabled = false;
@@ -957,11 +1156,31 @@ public partial class MainWindow : Window
     private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
     {
         _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var savedById = new Dictionary<string, SavedTrack>();
+        foreach (var item in restore?.Tracks ?? [])
+        {
+            if (!string.IsNullOrEmpty(item.SpotifyUrl))
+            {
+                savedById.TryAdd(item.SpotifyUrl, item);
+            }
+            if (!string.IsNullOrEmpty(item.Id))
+            {
+                savedById.TryAdd(item.Id, item);
+            }
+        }
+
         var resolvedTracks = new List<TrackItem>();
         foreach (var track in _playlist?.Tracks ?? [])
         {
-            var saved = restore?.Tracks.FirstOrDefault(item =>
-                (!string.IsNullOrEmpty(item.SpotifyUrl) && item.SpotifyUrl == track.SpotifyUrl) || item.Id == track.Id);
+            SavedTrack? saved = null;
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                savedById.TryGetValue(track.SpotifyUrl, out saved);
+            }
+            if (saved is null && !string.IsNullOrEmpty(track.Id))
+            {
+                savedById.TryGetValue(track.Id, out saved);
+            }
             if (saved is not null)
             {
                 track.IsSelected = saved.IsSelected && !saved.IsComplete;
@@ -975,15 +1194,13 @@ public partial class MainWindow : Window
             track.PropertyChanged += Track_PropertyChanged;
             resolvedTracks.Add(track);
         }
-        Tracks.ReplaceAll(resolvedTracks);
+        SetTracks(resolvedTracks);
 
         PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
         FilterBox.Clear();
         _failedTracks.Clear();
         _failedTracks.AddRange(Tracks.Where(track => track.HasError));
-        RetryFailedButton.Visibility = _failedTracks.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        RetryFailedButton.IsEnabled = _failedTracks.Count > 0;
-        RetryFailedButton.Content = $"Retry {_failedTracks.Count} failed";
+        UpdateRetryUi();
         HideFailureBanner();
         UpdateSelectionUi();
         var sourceLabel = SourceLabel();
@@ -1017,6 +1234,10 @@ public partial class MainWindow : Window
     private async Task RestoreJobAsync(SavedJob saved, bool sync)
     {
         using var operation = BeginSourceOperation(sync ? "Syncing with the source…" : "Restoring saved job…");
+        if (operation is null)
+        {
+            return;
+        }
         try
         {
             PlaylistUrlBox.Text = saved.SourceUrl;
@@ -1120,6 +1341,10 @@ public partial class MainWindow : Window
         }
 
         using var operation = BeginSourceOperation("Importing track manifest…");
+        if (operation is null)
+        {
+            return;
+        }
         try
         {
             PlaylistUrlBox.Text = dialog.FileName;
