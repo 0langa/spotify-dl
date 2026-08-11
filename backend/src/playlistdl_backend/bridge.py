@@ -205,6 +205,8 @@ class Bridge:
                     "retries": int(request.get("retries", 1)),
                     "ytdlp_args": request.get("ytdlp_args"),
                     "embed_lyrics": bool(request.get("embed_lyrics", False)),
+                    "duplicate_policy": str(request.get("duplicate_policy", "download")),
+                    "existing_files": request.get("existing_files"),
                 },
                 daemon=True,
             )

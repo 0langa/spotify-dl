@@ -30,6 +30,10 @@ public sealed class AppSettings
 
     public bool EmbedLyrics { get; set; }
 
+    /// <summary>What to do when a track was already downloaded by an earlier job.</summary>
+    /// <remarks>One of download, skip, copy, hardlink.</remarks>
+    public string DuplicatePolicy { get; set; } = "download";
+
     public bool AutoUpdateCheck { get; set; } = true;
 
     public DateTimeOffset? LastUpdateCheckUtc { get; set; }

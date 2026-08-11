@@ -1,10 +1,10 @@
 # Playlist DL roadmap
 
-Current baseline: v2.0.0. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
+Current baseline: v2.1.0. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
 
 ## Finished-for-now baseline
 
-Version 2.0.0 is feature-complete for current Windows personal-use scope. Maintenance should prioritize provider compatibility, security updates, bug fixes, and preservation of release gates. Network providers remain external dependencies; their availability cannot be guaranteed by Playlist DL.
+Version 2.0.1 closed every defect found by a full audit of the 2.0.0 code, and 2.1.0 completed the library and queue depth milestone: a persistent, reorderable queue, per-job failure reports, and cross-job duplicate handling. The Windows personal-use scope stays feature-complete. Maintenance should prioritize provider compatibility, security updates, bug fixes, and preservation of release gates. Network providers remain external dependencies; their availability cannot be guaranteed by Playlist DL.
 
 ## Optional future work
 
@@ -23,12 +23,7 @@ Version 2.0.0 is feature-complete for current Windows personal-use scope. Mainte
    - Cover-art column and richer metadata inspection.
    - Drag-and-drop Spotify links and manifest files.
 
-4. Library and queue depth
-   - Cross-job duplicate detection with explicit skip/copy/hardlink policy.
-   - Persistent pending queue across app restarts.
-   - Better queue reordering and per-job failure summary.
-
-5. Distribution trust
+4. Distribution trust
    - Authenticode signing when a trusted certificate is available.
    - Keep checksum verification, frozen-backend lifecycle smoke, Spotify resolver smoke, and malware scan in release CI.
 

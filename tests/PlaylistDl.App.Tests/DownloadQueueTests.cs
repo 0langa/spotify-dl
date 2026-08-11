@@ -6,15 +6,23 @@ namespace PlaylistDl.App.Tests;
 
 public sealed class DownloadQueueTests
 {
-    private static QueuedJob Job(string name) => new(
-        PlaylistId: Guid.NewGuid().ToString("N"),
-        Name: name,
-        SourceUrl: $"https://open.spotify.com/playlist/{name}",
-        SourceType: "playlist",
-        OutputDirectory: @"C:\music",
-        AllTracks: [new TrackItem { Id = "t1" }],
-        Tracks: [new TrackItem { Id = "t1" }],
-        Settings: QueuedJobSettings.From(new AppSettings()));
+    internal static QueuedJob Job(string name, params TrackItem[] tracks)
+    {
+        var all = tracks.Length > 0 ? tracks : [new TrackItem { Id = "t1" }];
+        var url = $"https://open.spotify.com/playlist/{name}";
+        return new QueuedJob(
+            Name: name,
+            SourceUrl: url,
+            SourceType: "playlist",
+            OutputDirectory: @"C:\music",
+            Settings: QueuedJobSettings.From(new AppSettings()),
+            Snapshot: SavedJobSnapshot.Create(url, name, "playlist", @"C:\music", all))
+        {
+            PlaylistId = Guid.NewGuid().ToString("N"),
+            AllTracks = all,
+            Tracks = [.. all.Where(track => track.IsSelected)],
+        };
+    }
 
     [Fact]
     public void FifoOrderAndCounts()
@@ -35,9 +43,70 @@ public sealed class DownloadQueueTests
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();
-        var empty = Job("empty") with { Tracks = [] };
+        var empty = Job("empty", new TrackItem { Id = "t1", IsSelected = false });
 
         Assert.Throws<ArgumentException>(() => queue.Enqueue(empty));
+    }
+
+    [Fact]
+    public void MoveReordersPendingJobsAndClampsAtTheEnds()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+        queue.Enqueue(Job("third"));
+
+        Assert.Equal(0, queue.Move(1, -1));
+        Assert.Equal(["second", "first", "third"], queue.PendingNames());
+        Assert.Equal(2, queue.Move(1, 5));
+        Assert.Equal(["second", "third", "first"], queue.PendingNames());
+        Assert.Equal(0, queue.Move(0, -1));
+        Assert.Equal(["second", "third", "first"], queue.PendingNames());
+    }
+
+    [Fact]
+    public void RemoveAtDropsOneJobAndIgnoresBadIndexes()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+
+        queue.RemoveAt(5);
+        Assert.Equal(2, queue.Count);
+        queue.RemoveAt(0);
+        Assert.Equal(["second"], queue.PendingNames());
+    }
+
+    [Fact]
+    public void ChangesAreAnnouncedSoTheQueueCanBePersisted()
+    {
+        var queue = new DownloadQueue();
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+        queue.Move(0, 1);
+        queue.RemoveAt(0);
+        queue.DequeueNext();
+        queue.Clear();
+
+        // Enqueue, enqueue, move, remove, dequeue: the final clear had nothing left to do.
+        Assert.Equal(5, changes);
+    }
+
+    [Fact]
+    public void RestoredJobsCountSelectionFromTheSnapshot()
+    {
+        var job = Job(
+            "restored",
+            new TrackItem { Id = "a" },
+            new TrackItem { Id = "b" },
+            new TrackItem { Id = "c", Status = "Done" });
+        var withoutLiveTracks = job with { PlaylistId = null, AllTracks = [], Tracks = [] };
+
+        Assert.True(withoutLiveTracks.NeedsResolve);
+        Assert.Equal(2, withoutLiveTracks.SelectedCount);
     }
 
     [Fact]

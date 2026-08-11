@@ -333,3 +333,44 @@ def test_playlist_file_replaces_a_track_redownloaded_under_another_naming_preset
         if line and not line.startswith("#")
     ]
     assert entries == ["Artist - One.mp3"]
+
+
+def test_an_unreadable_file_in_the_output_folder_does_not_abort_the_job(
+    job_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spotDL reads tags of everything already in the folder to find duplicates."""
+    engine: Engine = job_env["engine"]
+    engine._remember_source("job", "My Mix", [_fake_song("One", 1)])
+    _FakeDownloader.script = {"id-1": [("/out/one.mp3", None)]}
+    attempts: list[bool] = []
+
+    class ScanningDownloader(_FakeDownloader):
+        def __init__(self, settings: dict[str, Any]) -> None:
+            scanning = bool(settings.get("scan_for_songs"))
+            attempts.append(scanning)
+            if scanning:
+                raise Exception("can't sync to MPEG frame")
+            super().__init__(settings)
+
+    monkeypatch.setattr(engine_module, "Downloader", ScanningDownloader)
+
+    engine.download("job", job_env["out"])
+
+    assert attempts == [True, False]
+    assert _completion(job_env["events"])["results"][0]["success"] is True
+
+
+def test_a_downloader_failure_unrelated_to_the_scan_still_stops_the_job(
+    job_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = job_env["engine"]
+    engine._remember_source("job", "My Mix", [_fake_song("One", 1)])
+
+    class BrokenDownloader(_FakeDownloader):
+        def __init__(self, settings: dict[str, Any]) -> None:
+            raise Exception("ffmpeg is not installed")
+
+    monkeypatch.setattr(engine_module, "Downloader", BrokenDownloader)
+
+    with pytest.raises(Exception, match="ffmpeg is not installed"):
+        engine.download("job", job_env["out"])

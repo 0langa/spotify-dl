@@ -6,6 +6,7 @@ import importlib.util
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -37,6 +38,9 @@ EventSink = Callable[[dict[str, Any]], None]
 _SOURCE_TYPES = ("playlist", "album", "track")
 
 SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "wav", "ogg")
+
+# What to do with a track an earlier job already downloaded somewhere else.
+DUPLICATE_POLICIES = ("download", "skip", "copy", "hardlink")
 
 NAMING_PRESETS = {
     "position_artist_title": "{list-position} - {artist} - {title}.{output-ext}",
@@ -590,6 +594,36 @@ def _path_key(path: Path | str) -> str:
     return os.path.normcase(os.path.abspath(str(path))).casefold()
 
 
+def _create_downloader(settings: dict[str, Any]) -> Downloader:
+    """Build the downloader, giving up the duplicate scan rather than the whole job.
+
+    spotDL reads the tags of every file already in the output folder to find duplicates.
+    One unreadable or partially written file there used to abort the job before a single
+    track was attempted.
+    """
+    try:
+        return Downloader(settings)
+    except Exception:  # noqa: BLE001 - the retry re-raises anything unrelated to the scan
+        if not settings.get("scan_for_songs"):
+            raise
+        logger.exception("Duplicate scan of the output folder failed; continuing without it")
+        return Downloader({**settings, "scan_for_songs": False})
+
+
+def _output_path_for(song: Song, output_template: str, audio_format: str) -> Path:
+    """Return the file this job would write for one song, collision suffix included."""
+    base_path = spotdl_create_file_name(
+        song=song,
+        template=output_template,
+        file_extension=audio_format,
+        restrict="none",
+    )
+    suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
+    if not suffix:
+        return base_path
+    return base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+
+
 _TRACK_KEY_ATTRIBUTE = "_playlistdl_track_key"
 
 
@@ -957,7 +991,14 @@ class Engine:
         retries: int = 1,
         ytdlp_args: str | None = None,
         embed_lyrics: bool = False,
+        duplicate_policy: str = "download",
+        existing_files: dict[str, str] | None = None,
     ) -> None:
+        if duplicate_policy not in DUPLICATE_POLICIES:
+            raise ValueError(
+                f"Unsupported duplicate policy: {duplicate_policy}. "
+                f"Supported policies: {', '.join(DUPLICATE_POLICIES)}"
+            )
         if audio_format not in SUPPORTED_FORMATS:
             raise ValueError(
                 f"Unsupported audio format: {audio_format}. "
@@ -1014,7 +1055,7 @@ class Engine:
             "yt_dlp_args": (ytdlp_args or "").strip() or None,
             "ffmpeg": os.environ.get("PLAYLISTDL_FFMPEG", "ffmpeg"),
         }
-        downloader = Downloader(settings)
+        downloader = _create_downloader(settings)
         assign_unique_output_suffixes(
             songs,
             output_template,
@@ -1028,6 +1069,14 @@ class Engine:
         )
         downloader.progress_handler.set_songs(songs)
 
+        reused = self._reuse_existing_downloads(
+            songs,
+            output_template,
+            audio_format,
+            duplicate_policy,
+            existing_files or {},
+        )
+
         try:
             self._download_windows(
                 playlist_id=playlist_id,
@@ -1039,6 +1088,7 @@ class Engine:
                 retries=retries,
                 write_m3u=write_m3u,
                 audio_format=audio_format,
+                reused=reused,
             )
         finally:
             downloader.progress_handler.close()
@@ -1054,10 +1104,11 @@ class Engine:
         retries: int,
         write_m3u: bool,
         audio_format: str,
+        reused: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Run bounded download windows and always leave one final record per track."""
 
-        results_by_id: dict[str, dict[str, Any]] = {}
+        results_by_id: dict[str, dict[str, Any]] = dict(reused or {})
         started = time.monotonic()
         worker_count = max(1, min(threads, 4))
         window_size = worker_count * 4
@@ -1075,7 +1126,8 @@ class Engine:
             # track, is refused; recovery work then only deepens the rate limit.
             provider_blocked = blocked_windows >= _BLOCKED_WINDOW_LIMIT
             window = songs[offset : offset + window_size]
-            pending = list(window)
+            # Tracks reused from an earlier job already have their final record.
+            pending = [song for song in window if track_key(song) not in results_by_id]
             for attempt in range(max(0, retries) + 1):
                 if self._run_attempt(downloader, pending, results_by_id, threads, 0):
                     self._emit_cancelled(results_by_id, songs)
@@ -1151,6 +1203,98 @@ class Engine:
                 "failure_hint": FAILURE_HINTS.get(failure_class) if failure_class else None,
             }
         )
+
+    def _reuse_existing_downloads(
+        self,
+        songs: list[Song],
+        output_template: str,
+        audio_format: str,
+        duplicate_policy: str,
+        existing_files: dict[str, str],
+    ) -> dict[str, dict[str, Any]]:
+        """Satisfy tracks an earlier job already downloaded, per the chosen policy.
+
+        Returns one final record per reused track, so the download windows can skip them
+        while progress, results, and the playlist file still describe the whole job.
+        """
+        if duplicate_policy == "download" or not existing_files:
+            return {}
+
+        reused: dict[str, dict[str, Any]] = {}
+        for song in songs:
+            if self._cancel.is_set():
+                break
+            track_id = track_key(song)
+            source = existing_files.get(track_id) or existing_files.get(str(song.url or ""))
+            if not source:
+                continue
+            existing = Path(source)
+            # Reusing an MP3 for a FLAC job would produce a mislabeled file, so only a
+            # file already in the requested format can stand in for a download.
+            if existing.suffix.lower() != f".{audio_format.lower()}":
+                continue
+            try:
+                if not existing.is_file():
+                    continue
+            except OSError:
+                continue
+
+            destination = _output_path_for(song, output_template, audio_format)
+            record = self._reuse_one_download(song, existing, destination, duplicate_policy)
+            if record is not None:
+                reused[track_id] = record
+        return reused
+
+    def _reuse_one_download(
+        self,
+        song: Song,
+        existing: Path,
+        destination: Path,
+        duplicate_policy: str,
+    ) -> dict[str, Any] | None:
+        track_id = track_key(song)
+        if _path_key(existing) == _path_key(destination) or duplicate_policy == "skip":
+            return self._reused_record(song, existing, "already downloaded")
+
+        try:
+            if destination.exists():
+                return self._reused_record(song, destination, "already downloaded")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if duplicate_policy == "hardlink":
+                try:
+                    os.link(existing, destination)
+                    return self._reused_record(song, destination, "hard-linked from library")
+                except OSError:
+                    # Hard links need the same volume; copying keeps the job usable.
+                    logger.info("Hard link unavailable for %s; copying instead", track_id)
+            # Copy aside first: an interrupted copy must not leave a truncated file that
+            # later looks like a finished download.
+            staged = destination.with_name(destination.name + ".partial")
+            try:
+                shutil.copy2(existing, staged)
+                staged.replace(destination)
+            except OSError:
+                staged.unlink(missing_ok=True)
+                raise
+            return self._reused_record(song, destination, "copied from library")
+        except OSError:
+            logger.exception("Could not reuse an existing download for %s", track_id)
+            return None
+
+    def _reused_record(self, song: Song, path: Path, status: str) -> dict[str, Any]:
+        track_id = track_key(song)
+        self._emit(
+            {
+                "type": "track_progress",
+                "track_id": track_id,
+                "progress": 100,
+                "status": status.capitalize(),
+                "path": str(path),
+            }
+        )
+        record = self._result_record(song, path, track_id=track_id)
+        record["reused"] = status
+        return record
 
     @staticmethod
     def _window_is_blocked(

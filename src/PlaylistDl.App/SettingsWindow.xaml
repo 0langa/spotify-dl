@@ -70,6 +70,16 @@
         <CheckBox x:Name="CreateSourceFolderBox" Content="Create a folder named after the playlist, album, or import"
                   Foreground="White" Margin="0,10,0,0" />
 
+        <TextBlock Text="Tracks already downloaded by an earlier job" FontWeight="SemiBold" Margin="0,20,0,0" />
+        <ComboBox x:Name="DuplicatePolicyBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
+          <ComboBoxItem Tag="download">Download again (default)</ComboBoxItem>
+          <ComboBoxItem Tag="skip">Skip and keep the existing file where it is</ComboBoxItem>
+          <ComboBoxItem Tag="copy">Copy the existing file into this job's folder</ComboBoxItem>
+          <ComboBoxItem Tag="hardlink">Hard-link the existing file (one copy on disk)</ComboBoxItem>
+        </ComboBox>
+        <TextBlock Text="Matched against completed tracks in the job library. Hard links need the same drive and fall back to a copy."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+
         <TextBlock Text="Download pacing" FontWeight="SemiBold" Margin="0,20,0,0" />
         <ComboBox x:Name="ThrottleBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
           <ComboBoxItem Tag="0">No delay between batches (default)</ComboBoxItem>

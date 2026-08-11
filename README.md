@@ -31,11 +31,12 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Per-track manual YouTube source override for correcting a weak or wrong automatic match
 - Per-track selection with select-all and live filtering by title, artist, or album
 - Per-track and overall progress, bounded parallel downloads, measured throughput/ETA, duplicate scanning, batch cancellation
-- Multi-source download queue with per-job settings snapshots and sequential execution
+- Multi-source download queue with per-job settings snapshots, sequential execution, reordering, and pending jobs that survive a restart
+- Optional cross-job duplicate handling: skip, copy, or hard-link a track an earlier job already downloaded
 - Per-track Done/Failed results with selectable exact errors, retained session logs, one-click retry, and automatic backoff retry for transient failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing and advanced yt-dlp argument passthrough
-- Job library with restart-safe resume, per-source progress history, and one-click playlist Sync that downloads only new or unfinished tracks
+- Job library with restart-safe resume, per-source progress history, per-job queue report, and one-click playlist Sync that downloads only new or unfinished tracks
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags, cover art, and optional embedded lyrics
 - Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
 - Optional .m3u8 playlist export preserving track order and merging with earlier runs of the same source, plus Open folder shortcut
@@ -76,12 +77,15 @@ Minimal JSON:
 - When YouTube blocks or rate-limits the whole network, retries and alternate-source searches stop for the rest of the job and the guidance banner appears immediately instead of after every remaining track has failed.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
 - If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; outdated saved overrides are rejected and replaced by the current bundled backend before a job starts.
+- Queued jobs restored after a restart are resolved again before they run, so a source that has become unavailable is reported and the rest of the queue continues.
+- Cross-job duplicate handling matches completed library tracks by Spotify track id or URL and only reuses a file already in the requested output format. Imported manifests without a Spotify URL therefore match only within their own source.
+- Hard-linked duplicates need the source file and the output folder on one drive; otherwise the file is copied instead. The skip policy leaves the file where it is, so the playlist file references it by absolute path.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.0.1
+./scripts/build-release.ps1 -Version 2.1.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
