@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-08-12
+
+### Added
+
+- Pending queue jobs are saved and restored across restarts. A restored job is resolved again before it runs, so it picks up new tracks and skips what is already downloaded.
+- New Queue window: reorder waiting jobs, remove one, clear all, and read the per-job report of the last run.
+- Per-job failure summary for queue runs, with the count saved, the count failed, and the actionable hint or error for each job.
+- Optional cross-job duplicate handling. A track an earlier job already downloaded can be skipped, copied, or hard-linked into the new job's folder instead of downloaded again; hard links fall back to a copy across drives.
+
+### Changed
+
+- A failed, cancelled, or interrupted queue job no longer discards the jobs waiting behind it. The run stops, the reason is recorded in the queue report, and the remaining jobs stay queued.
+- A queued source that can no longer be resolved is reported in the queue report and the queue continues with the next job.
+
 ## 2.0.1 - 2026-08-11
 
 ### Fixed

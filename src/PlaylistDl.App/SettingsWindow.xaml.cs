@@ -21,6 +21,7 @@ public partial class SettingsWindow : Window
         BackendExecutableBox.Text = settings.BackendExecutable ?? string.Empty;
         WriteM3uBox.IsChecked = settings.WriteM3u;
         SelectByTag(NamingPresetBox, settings.NamingPreset);
+        SelectByTag(DuplicatePolicyBox, settings.DuplicatePolicy);
         CreateSourceFolderBox.IsChecked = settings.CreateSourceFolder;
         SelectByTag(ThrottleBox, settings.ThrottleSeconds.ToString());
         YtDlpArgsBox.Text = settings.YtDlpArgs ?? string.Empty;
@@ -112,6 +113,8 @@ public partial class SettingsWindow : Window
         _settings.NamingPreset = ((ComboBoxItem)NamingPresetBox.SelectedItem).Tag?.ToString()
             ?? "position_artist_title";
         _settings.CreateSourceFolder = CreateSourceFolderBox.IsChecked == true;
+        _settings.DuplicatePolicy = ((ComboBoxItem)DuplicatePolicyBox.SelectedItem).Tag?.ToString()
+            ?? "download";
         _settings.ThrottleSeconds = int.Parse(((ComboBoxItem)ThrottleBox.SelectedItem).Tag?.ToString() ?? "0");
         _settings.YtDlpArgs = string.IsNullOrWhiteSpace(YtDlpArgsBox.Text) ? null : YtDlpArgsBox.Text.Trim();
         _settings.EmbedLyrics = EmbedLyricsBox.IsChecked == true;

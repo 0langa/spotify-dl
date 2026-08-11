@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService = new();
     private readonly JobStore _jobStore = new();
     private readonly LibraryStore _library = new();
+    private readonly QueueStore _queueStore = new();
+    private readonly List<QueueJobSummary> _queueReport = [];
+    private const int PreparationFailureLimit = 3;
     private readonly UpdateService _updateService = new();
     private readonly AppSettings _settings;
     private readonly ICollectionView _tracksView;
@@ -82,6 +85,11 @@ public partial class MainWindow : Window
             StatusText.Text = "Outdated alternate backend replaced with bundled backend";
         });
         _uiReady = true;
+        // Subscribed after the restore so a queue.json that could not be read is never
+        // overwritten with an empty queue before the user changes anything.
+        _queue.Replace(_queueStore.Load());
+        _queue.Changed += (_, _) => PersistQueue();
+        UpdateQueueUi();
         _savedJob = _jobStore.Load();
         _library.MigrateFromLastJob(_savedJob);
         ResumeButton.Visibility = _savedJob is null ? Visibility.Collapsed : Visibility.Visible;
@@ -246,9 +254,9 @@ public partial class MainWindow : Window
             ? true
             : visibleSelected == 0 ? false : null;
         _syncingSelectAll = false;
-        DownloadButton.IsEnabled = (selected > 0 && !_jobRunning && _playlist is not null) ||
-            (!_queue.IsEmpty && !_jobRunning);
-        AddToQueueButton.IsEnabled = selected > 0 && !_jobRunning && _playlist is not null;
+        var idle = !_jobRunning && !_queueRunning && _sourceOperationCts is null;
+        DownloadButton.IsEnabled = idle && ((selected > 0 && _playlist is not null) || !_queue.IsEmpty);
+        AddToQueueButton.IsEnabled = idle && selected > 0 && _playlist is not null;
         if (_playlist is not null)
         {
             PlaylistSummary.Text = $"{SourceLabel()} · {selected}/{Tracks.Count} tracks selected · {_playlist.Owner}";
@@ -266,10 +274,12 @@ public partial class MainWindow : Window
     /// <summary>Source intake stays disabled while a job owns the backend session.</summary>
     private void UpdateSourceIntakeAvailability()
     {
-        AnalyzeButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
-        ImportManifestButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
-        LibraryButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
-        ResumeButton.IsEnabled = !_jobRunning && _sourceOperationCts is null;
+        // A queue run owns the backend session from its first re-resolve onwards.
+        var idle = !_jobRunning && !_queueRunning && _sourceOperationCts is null;
+        AnalyzeButton.IsEnabled = idle;
+        ImportManifestButton.IsEnabled = idle;
+        LibraryButton.IsEnabled = idle;
+        ResumeButton.IsEnabled = idle;
         UpdateRetryUi();
     }
 
@@ -357,6 +367,11 @@ public partial class MainWindow : Window
     {
         if (!_queue.IsEmpty)
         {
+            if (!_queueRunning)
+            {
+                // Each run reports on itself; the previous run's report is replaced.
+                _queueReport.Clear();
+            }
             await RunQueueAsync();
             return;
         }
@@ -386,14 +401,22 @@ public partial class MainWindow : Window
         }
 
         _queue.Enqueue(new QueuedJob(
-            _playlist.Id,
             _playlist.Name,
             _playlist.SourceUrl,
             _playlist.SourceType,
             OutputDirectoryBox.Text,
-            [.. Tracks],
-            selectedTracks,
-            QueuedJobSettings.From(_settings)));
+            QueuedJobSettings.From(_settings),
+            SavedJobSnapshot.Create(
+                _playlist.SourceUrl,
+                _playlist.Name,
+                _playlist.SourceType,
+                OutputDirectoryBox.Text,
+                Tracks))
+        {
+            PlaylistId = _playlist.Id,
+            AllTracks = [.. Tracks],
+            Tracks = selectedTracks,
+        });
         foreach (var track in selectedTracks)
         {
             track.Progress = 0;
@@ -410,46 +433,181 @@ public partial class MainWindow : Window
         DownloadButton.Content = _queue.IsEmpty
             ? "Download audio"
             : $"Start queue ({_queue.Count})";
-        if (!_queue.IsEmpty && !_jobRunning)
+        QueueButton.Content = _queue.IsEmpty ? "Queue" : $"Queue ({_queue.Count})";
+        QueueButton.IsEnabled = !_queue.IsEmpty || _queueReport.Count > 0;
+        if (!_queue.IsEmpty && !_jobRunning && !_queueRunning && _sourceOperationCts is null)
         {
             DownloadButton.IsEnabled = true;
         }
     }
 
+    private void QueueButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new QueueWindow(_queue, _queueReport, _queueRunning) { Owner = this };
+        dialog.ShowDialog();
+        UpdateQueueUi();
+        UpdateSelectionUi();
+    }
+
+    /// <summary>Counts only the tracks this job asked for, not everything on screen.</summary>
+    private int CompletedTracksOfThisJob() =>
+        Tracks.Count(track => track.Status == "Done" && _activeTrackIds.Contains(track.Id));
+
+    private void PersistQueue()
+    {
+        try
+        {
+            _queueStore.Save(_queue.Items);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StatusText.Text = $"Queue could not be saved: {exception.Message}";
+        }
+    }
+
     private async Task RunQueueAsync()
     {
-        var job = _queue.DequeueNext();
-        if (job is null)
+        QueuedJob prepared;
+        _queueRunning = true;
+        // Claim the session before the first await: a second click, or an analyze while a
+        // job is being prepared, would otherwise run two jobs against one backend.
+        UpdateSourceIntakeAvailability();
+        UpdateSelectionUi();
+        CancelButton.IsEnabled = true;
+        var preparationFailures = 0;
+        while (true)
         {
-            _queueRunning = false;
-            _activeQueuedJob = null;
-            UpdateQueueUi();
-            return;
+            var job = _queue.DequeueNext();
+            if (job is null)
+            {
+                FinishQueueRun();
+                return;
+            }
+
+            _activeQueuedJob = job;
+            StatusText.Text = _queue.IsEmpty
+                ? $"Queue: preparing \"{job.Name}\""
+                : $"Queue: preparing \"{job.Name}\" — {_queue.Count} more waiting";
+
+            try
+            {
+                prepared = await PrepareQueuedJobAsync(job);
+                break;
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // One unresolvable source must not discard the jobs behind it.
+                _queueReport.Add(new QueueJobSummary(job.Name, 0, 0, null, exception.Message));
+                _activeQueuedJob = null;
+                if (++preparationFailures >= PreparationFailureLimit && !_queue.IsEmpty)
+                {
+                    _queue.Requeue(job);
+                    // Repeated failures mean the backend or the network is the problem,
+                    // not the sources; stop before the whole queue is consumed by it.
+                    FinishQueueRun();
+                    StatusText.Text =
+                        $"Queue paused after {preparationFailures} sources could not be prepared — " +
+                        $"{_queue.Count} jobs kept. Open Queue for details.";
+                    return;
+                }
+            }
         }
 
-        _queueRunning = true;
-        _activeQueuedJob = job;
+        _activeQueuedJob = prepared;
         // The queued job becomes the current source: saving, retrying, and the track
         // grid must all describe the job that is actually running.
         _playlist = new PlaylistInfo
         {
-            Id = job.PlaylistId,
-            Name = job.Name,
-            SourceUrl = job.SourceUrl,
-            SourceType = job.SourceType,
+            Id = prepared.PlaylistId ?? string.Empty,
+            Name = prepared.Name,
+            SourceUrl = prepared.SourceUrl,
+            SourceType = prepared.SourceType,
             Owner = "queued job",
         };
-        PlaylistUrlBox.Text = job.SourceUrl;
-        OutputDirectoryBox.Text = job.OutputDirectory;
-        SetTracks(job.AllTracks);
-        PlaylistTitle.Text = job.Name;
+        PlaylistUrlBox.Text = prepared.SourceUrl;
+        OutputDirectoryBox.Text = prepared.OutputDirectory;
+        SetTracks(prepared.AllTracks);
+        PlaylistTitle.Text = prepared.Name;
         _tracksView.Refresh();
         UpdateQueueUi();
         UpdateSelectionUi();
         StatusText.Text = _queue.IsEmpty
-            ? $"Queue: downloading \"{job.Name}\""
-            : $"Queue: downloading \"{job.Name}\" — {_queue.Count} more waiting";
-        await StartJobCoreAsync(job.PlaylistId, job.OutputDirectory, job.Tracks, job.Settings);
+            ? $"Queue: downloading \"{prepared.Name}\""
+            : $"Queue: downloading \"{prepared.Name}\" — {_queue.Count} more waiting";
+        await StartJobCoreAsync(
+            prepared.PlaylistId ?? string.Empty,
+            prepared.OutputDirectory,
+            prepared.Tracks,
+            prepared.Settings);
+    }
+
+    /// <summary>Gives a queued job a live backend playlist, re-resolving it when needed.</summary>
+    /// <remarks>
+    /// A job restored from disk, or one whose backend session was replaced, has no live
+    /// playlist id left, so the source is resolved again and the saved per-track state
+    /// decides what still needs downloading.
+    /// </remarks>
+    private async Task<QueuedJob> PrepareQueuedJobAsync(QueuedJob job)
+    {
+        if (!job.NeedsResolve)
+        {
+            return job;
+        }
+
+        var response = job.SourceType switch
+        {
+            "import" => await _backend.RequestAsync("import_manifest", new { path = job.SourceUrl }),
+            "search" => await _backend.RequestAsync(
+                "resolve_search",
+                new
+                {
+                    query = job.SourceUrl.StartsWith("search:", StringComparison.OrdinalIgnoreCase)
+                        ? job.SourceUrl["search:".Length..]
+                        : job.SourceUrl,
+                    limit = 12,
+                }),
+            _ => await _backend.RequestAsync("resolve", new { url = job.SourceUrl }),
+        };
+
+        var playlist = response.GetProperty("playlist")
+            .Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new InvalidDataException("The queued source could not be read.");
+        var restored = RestoreTracks(playlist, job.Snapshot);
+        var selected = restored.Where(track => track.IsSelected).ToList();
+        if (selected.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Every track of \"{job.Name}\" is already downloaded.");
+        }
+
+        return job with
+        {
+            PlaylistId = playlist.Id,
+            AllTracks = restored,
+            Tracks = selected,
+        };
+    }
+
+    private void FinishQueueRun()
+    {
+        _queueRunning = false;
+        _activeQueuedJob = null;
+        UpdateSourceIntakeAvailability();
+        UpdateSelectionUi();
+        if (!_jobRunning)
+        {
+            CancelButton.IsEnabled = false;
+        }
+        UpdateQueueUi();
+        PersistQueue();
+        if (_queueReport.Count > 0)
+        {
+            var saved = _queueReport.Sum(summary => summary.Succeeded);
+            var failed = _queueReport.Sum(summary => summary.Failed);
+            StatusText.Text =
+                $"Queue finished — {_queueReport.Count} jobs, {saved} saved, {failed} failed. " +
+                "Open Queue for the per-job report.";
+        }
     }
 
     private Task StartJobAsync(IReadOnlyList<TrackItem> jobTracks)
@@ -480,6 +638,10 @@ public partial class MainWindow : Window
             }
 
             Directory.CreateDirectory(outputDirectory);
+            // Reading every library entry can take a moment on a large library.
+            var existingFiles = snapshot.DuplicatePolicy == "download"
+                ? null
+                : await Task.Run(() => _library.DownloadedFiles(_playlist?.SourceUrl));
             _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
             // This job supersedes the previous failure set; results repopulate it.
             _failedTracks.Clear();
@@ -513,22 +675,29 @@ public partial class MainWindow : Window
                     retries = 1,
                     ytdlp_args = snapshot.YtDlpArgs,
                     embed_lyrics = snapshot.EmbedLyrics,
+                    duplicate_policy = snapshot.DuplicatePolicy,
+                    existing_files = existingFiles,
                 });
             SaveCurrentJob();
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
+            var failedJobName = _activeQueuedJob?.Name;
             _jobRunning = false;
             _jobProgressText = null;
-            _queueRunning = false;
-            _queue.Clear();
             _activeQueuedJob = null;
             UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
-            UpdateQueueUi();
             UpdateSelectionUi();
             StatusText.Text = $"Download could not start: {exception.Message}";
             SaveCurrentJob();
+            if (failedJobName is not null)
+            {
+                // Keep the jobs behind this one; the user restarts the queue when ready.
+                _queueReport.Add(new QueueJobSummary(failedJobName, 0, 0, null, exception.Message));
+            }
+            _queueRunning = false;
+            UpdateQueueUi();
         }
     }
 
@@ -553,7 +722,6 @@ public partial class MainWindow : Window
         {
             _jobRunning = false;
             _queueRunning = false;
-            _queue.Clear();
             _activeQueuedJob = null;
             UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
@@ -656,7 +824,8 @@ public partial class MainWindow : Window
         _playlist = null;
         _activeTrackIds.Clear();
         _failedTracks.Clear();
-        _queue.Clear();
+        // Queued jobs outlive the backend session; they are resolved again when they run.
+        _queue.InvalidateSessions();
         // The restarted backend no longer owns the previous job, so the job state must
         // not stay armed — otherwise Cancel and Analyze remain locked with no job left.
         _jobRunning = false;
@@ -818,7 +987,19 @@ public partial class MainWindow : Window
                     var m3uPath = message.TryGetProperty("m3u_path", out var m3u) && m3u.ValueKind == JsonValueKind.String
                         ? m3u.GetString()
                         : null;
-                    ApplyJobResults(JobResults.Parse(message), m3uPath, JobResults.ParseFailure(message));
+                    var results = JobResults.Parse(message);
+                    var failure = JobResults.ParseFailure(message);
+                    ApplyJobResults(results, m3uPath, failure);
+                    if (_activeQueuedJob is not null)
+                    {
+                        var succeeded = results.Count(result => result.Success);
+                        _queueReport.Add(new QueueJobSummary(
+                            _activeQueuedJob.Name,
+                            succeeded,
+                            results.Count - succeeded,
+                            failure?.FailureHint,
+                            null));
+                    }
                     if (_queueRunning && !_queue.IsEmpty)
                     {
                         await RunQueueAsync();
@@ -826,9 +1007,7 @@ public partial class MainWindow : Window
                     }
                     if (_queueRunning)
                     {
-                        _queueRunning = false;
-                        _activeQueuedJob = null;
-                        StatusText.Text = "Queue finished — " + StatusText.Text;
+                        FinishQueueRun();
                     }
                     NotifyJobFinished();
                 }
@@ -838,21 +1017,40 @@ public partial class MainWindow : Window
                     {
                         ApplyLiveTrackResult(result);
                     }
+                    if (_activeQueuedJob is not null)
+                    {
+                        _queueReport.Add(new QueueJobSummary(
+                            _activeQueuedJob.Name,
+                            CompletedTracksOfThisJob(),
+                            _failedTracks.Count,
+                            null,
+                            "Cancelled"));
+                    }
+                    // Cancelling stops the run; the jobs behind it stay queued.
                     _queueRunning = false;
-                    _queue.Clear();
+                    _activeQueuedJob = null;
                     UpdateQueueUi();
                     NotifyJobFinished();
-                    StatusText.Text = "Downloads cancelled";
+                    StatusText.Text = _queue.IsEmpty
+                        ? "Downloads cancelled"
+                        : $"Downloads cancelled — {_queue.Count} queued jobs kept";
                     SaveCurrentJob();
-                    _activeQueuedJob = null;
                 }
             }
             else if (type == "error" && _jobRunning)
             {
                 _jobRunning = false;
                 _jobProgressText = null;
+                if (_activeQueuedJob is not null)
+                {
+                    _queueReport.Add(new QueueJobSummary(
+                        _activeQueuedJob.Name,
+                        CompletedTracksOfThisJob(),
+                        _failedTracks.Count,
+                        null,
+                        "Backend stopped during this job"));
+                }
                 _queueRunning = false;
-                _queue.Clear();
                 UpdateQueueUi();
                 UpdateSourceIntakeAvailability();
                 CancelButton.IsEnabled = false;
@@ -868,7 +1066,6 @@ public partial class MainWindow : Window
             // silently stall the queue or hide the job state.
             _jobRunning = false;
             _queueRunning = false;
-            _queue.Clear();
             UpdateQueueUi();
             UpdateSourceIntakeAvailability();
             CancelButton.IsEnabled = false;
@@ -1116,6 +1313,7 @@ public partial class MainWindow : Window
 
         _sourceOperationCts = new CancellationTokenSource();
         UpdateSourceIntakeAvailability();
+        UpdateSelectionUi();
         CancelButton.IsEnabled = true;
         StatusText.Text = status;
         return _sourceOperationCts;
@@ -1129,6 +1327,7 @@ public partial class MainWindow : Window
         }
         operation.Dispose();
         UpdateSourceIntakeAvailability();
+        UpdateSelectionUi();
         if (!_jobRunning)
         {
             CancelButton.IsEnabled = false;
@@ -1153,9 +1352,9 @@ public partial class MainWindow : Window
         ApplyResolvedPlaylist(response, restore);
     }
 
-    private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
+    /// <summary>Applies a saved snapshot onto freshly resolved tracks.</summary>
+    private List<TrackItem> RestoreTracks(PlaylistInfo? playlist, SavedJob? restore)
     {
-        _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var savedById = new Dictionary<string, SavedTrack>();
         foreach (var item in restore?.Tracks ?? [])
         {
@@ -1170,7 +1369,7 @@ public partial class MainWindow : Window
         }
 
         var resolvedTracks = new List<TrackItem>();
-        foreach (var track in _playlist?.Tracks ?? [])
+        foreach (var track in playlist?.Tracks ?? [])
         {
             SavedTrack? saved = null;
             if (!string.IsNullOrEmpty(track.SpotifyUrl))
@@ -1194,7 +1393,14 @@ public partial class MainWindow : Window
             track.PropertyChanged += Track_PropertyChanged;
             resolvedTracks.Add(track);
         }
-        SetTracks(resolvedTracks);
+
+        return resolvedTracks;
+    }
+
+    private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
+    {
+        _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        SetTracks(RestoreTracks(_playlist, restore));
 
         PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
         FilterBox.Clear();
@@ -1291,6 +1497,11 @@ public partial class MainWindow : Window
     private void SaveCurrentJob()
     {
         SavedJob? snapshot;
+        if (_activeQueuedJob is { AllTracks.Count: 0 })
+        {
+            // Still preparing: the durable snapshot is the queue's, not an empty grid.
+            return;
+        }
         if (_activeQueuedJob is not null)
         {
             snapshot = SavedJobSnapshot.Create(

@@ -113,6 +113,66 @@ public sealed class LibraryStoreTests : IDisposable
         Assert.True(key.All(char.IsAsciiLetterOrDigit));
     }
 
+    [Fact]
+    public void DownloadedFilesIndexesCompletedTracksForReuse()
+    {
+        var job = new SavedJob
+        {
+            SourceUrl = "https://open.spotify.com/playlist/one",
+            SourceName = "One",
+            Tracks =
+            [
+                new SavedTrack
+                {
+                    Id = "done",
+                    SpotifyUrl = "https://open.spotify.com/track/done",
+                    IsComplete = true,
+                    OutputPath = @"C:\music\One - A - Done.mp3",
+                },
+                new SavedTrack { Id = "unfinished", OutputPath = null, IsComplete = false },
+                new SavedTrack { Id = "no-path", IsComplete = true, OutputPath = "  " },
+            ],
+        };
+        Store.Save(job);
+
+        var files = Store.DownloadedFiles(null);
+
+        Assert.Equal(@"C:\music\One - A - Done.mp3", files["done"]);
+        Assert.Equal(@"C:\music\One - A - Done.mp3", files["https://open.spotify.com/track/done"]);
+        Assert.False(files.ContainsKey("unfinished"));
+        Assert.False(files.ContainsKey("no-path"));
+    }
+
+    [Fact]
+    public void DownloadedFilesSkipsTheSourceBeingDownloadedButKeepsOthers()
+    {
+        var url = "https://open.spotify.com/playlist/one";
+        Store.Save(new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "One",
+            Tracks =
+            [
+                new SavedTrack { Id = "own", IsComplete = true, OutputPath = @"C:\music\own.mp3" },
+            ],
+        });
+        Store.Save(new SavedJob
+        {
+            SourceUrl = "https://open.spotify.com/playlist/other",
+            SourceName = "Other",
+            Tracks =
+            [
+                new SavedTrack { Id = "shared", IsComplete = true, OutputPath = @"C:\music\shared.mp3" },
+            ],
+        });
+
+        var files = Store.DownloadedFiles(url);
+
+        // The same Spotify track keeps its id across sources, so ids must stay matchable.
+        Assert.True(files.ContainsKey("shared"));
+        Assert.False(files.ContainsKey("own"));
+    }
+
     public void Dispose()
     {
         try

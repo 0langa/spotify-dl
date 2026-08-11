@@ -72,6 +72,49 @@ public sealed class LibraryStore
         return jobs.OrderByDescending(job => job.UpdatedAt).ToList();
     }
 
+    /// <summary>
+    /// Maps track ids and Spotify URLs onto files earlier jobs already downloaded, so a
+    /// new job can reuse them instead of downloading the same audio twice.
+    /// </summary>
+    /// <remarks>
+    /// The source being downloaded is skipped, because reusing a job's own earlier output
+    /// would defeat a deliberate re-download of that source. Track ids are not excluded:
+    /// the same Spotify track keeps its id across sources, which is exactly the match the
+    /// backend looks for. Paths are not checked here; the backend verifies that each file
+    /// still exists before it reuses one.
+    /// </remarks>
+    public Dictionary<string, string> DownloadedFiles(string? currentSourceUrl)
+    {
+        var files = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var job in List())
+        {
+            if (!string.IsNullOrWhiteSpace(currentSourceUrl) &&
+                string.Equals(job.SourceUrl, currentSourceUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var track in job.Tracks)
+            {
+                if (!track.IsComplete || string.IsNullOrWhiteSpace(track.OutputPath))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(track.Id))
+                {
+                    files.TryAdd(track.Id, track.OutputPath);
+                }
+                if (!string.IsNullOrEmpty(track.SpotifyUrl))
+                {
+                    files.TryAdd(track.SpotifyUrl, track.OutputPath);
+                }
+            }
+        }
+
+        return files;
+    }
+
     public SavedJob? Load(string sourceUrl)
     {
         var path = PathFor(sourceUrl);
