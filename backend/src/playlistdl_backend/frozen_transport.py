@@ -6,7 +6,25 @@ from typing import Any
 
 import requests
 
-_sessions: dict[int, requests.Session] = {}
+# The session lives on the client itself, so a released client can never hand its
+# session to whatever object later reuses its address.
+_SESSION_ATTRIBUTE = "_playlistdl_session"
+_sessions: list[requests.Session] = []
+_fallback_sessions: dict[int, requests.Session] = {}
+
+
+def _session_for(client: Any, session_factory: Callable[[], requests.Session]):
+    session = getattr(client, _SESSION_ATTRIBUTE, None) or _fallback_sessions.get(id(client))
+    if session is not None:
+        return session
+
+    session = session_factory()
+    _sessions.append(session)
+    try:
+        setattr(client, _SESSION_ATTRIBUTE, session)
+    except (AttributeError, TypeError):
+        _fallback_sessions[id(client)] = session
+    return session
 
 
 def install_frozen_spotify_transport(
@@ -19,10 +37,7 @@ def install_frozen_spotify_transport(
         if isinstance(url, (bytes, memoryview)):
             url = bytes(url).decode("utf-8")
 
-        session = _sessions.get(id(client))
-        if session is None:
-            session = session_factory()
-            _sessions[id(client)] = session
+        session = _session_for(client, session_factory)
         session.headers.update(dict(client.headers))
         if getattr(client, "proxies", None):
             session.proxies.update(client.proxies)
@@ -44,6 +59,7 @@ def install_frozen_spotify_transport(
 
 @atexit.register
 def _close_sessions() -> None:
-    for session in _sessions.values():
+    for session in list(_sessions):
         session.close()
     _sessions.clear()
+    _fallback_sessions.clear()

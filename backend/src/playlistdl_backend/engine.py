@@ -147,6 +147,12 @@ FAILURE_HINTS = {
 }
 
 
+# Bounds a long session's memory while staying far above the number of sources a user
+# can realistically queue before starting the queue.
+_MAX_RETAINED_SOURCES = 32
+# Consecutive fully blocked windows that mean the network, not the track, is refused.
+# One window can be a run of age-restricted videos; two in a row cannot.
+_BLOCKED_WINDOW_LIMIT = 2
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
 _SPOTIFY_RESOLVE_RETRY_SECONDS = 1.0
@@ -584,6 +590,28 @@ def _path_key(path: Path | str) -> str:
     return os.path.normcase(os.path.abspath(str(path))).casefold()
 
 
+_TRACK_KEY_ATTRIBUTE = "_playlistdl_track_key"
+
+
+def track_key(song: Song) -> str:
+    """Return the job-stable identity of one song."""
+    return str(getattr(song, _TRACK_KEY_ATTRIBUTE, "") or song.song_id or song.url or "")
+
+
+def assign_track_keys(songs: list[Song]) -> None:
+    """Keep every track addressable even when a source lists the same song twice."""
+    used: set[str] = set()
+    for index, song in enumerate(songs, start=1):
+        base = str(song.song_id or song.url or f"track-{index}")
+        key = base
+        ordinal = 2
+        while key in used:
+            key = f"{base}#{ordinal}"
+            ordinal += 1
+        used.add(key)
+        setattr(song, _TRACK_KEY_ATTRIBUTE, key)
+
+
 def assign_unique_output_suffixes(
     songs: list[Song],
     output_template: str,
@@ -680,6 +708,23 @@ class Engine:
         self._cancel = threading.Event()
         self._progress_state: dict[str, tuple[int, str, str | None]] = {}
 
+    def _remember_source(self, playlist_id: str, name: str, songs: list[Song]) -> None:
+        """Store one resolved source, dropping the least recently used ones."""
+        assign_track_keys(songs)
+        self._songs[playlist_id] = songs
+        self._names[playlist_id] = name
+        while len(self._songs) > _MAX_RETAINED_SOURCES:
+            oldest = next(iter(self._songs))
+            self._songs.pop(oldest, None)
+            self._names.pop(oldest, None)
+
+    def _touch_source(self, playlist_id: str) -> None:
+        """Mark a source as most recently used so eviction never drops active work."""
+        if playlist_id in self._songs:
+            self._songs[playlist_id] = self._songs.pop(playlist_id)
+            if playlist_id in self._names:
+                self._names[playlist_id] = self._names.pop(playlist_id)
+
     def _ensure_spotify(self) -> None:
         if self._spotify_initialized:
             return
@@ -696,8 +741,7 @@ class Engine:
         self._ensure_spotify()
         name, description, owner, cover_url, songs = self._fetch_source(source_type, url)
         playlist_id = uuid.uuid4().hex
-        self._songs[playlist_id] = songs
-        self._names[playlist_id] = name
+        self._remember_source(playlist_id, name, songs)
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
         return PlaylistDto(
             id=playlist_id,
@@ -739,8 +783,7 @@ class Engine:
         for song in songs:
             song.list_length = len(songs)
         playlist_id = uuid.uuid4().hex
-        self._songs[playlist_id] = songs
-        self._names[playlist_id] = text
+        self._remember_source(playlist_id, text, songs)
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
         return PlaylistDto(
             id=playlist_id,
@@ -756,8 +799,7 @@ class Engine:
     def import_manifest(self, path: str) -> PlaylistDto:
         name, songs = load_manifest(path)
         playlist_id = uuid.uuid4().hex
-        self._songs[playlist_id] = songs
-        self._names[playlist_id] = name
+        self._remember_source(playlist_id, name, songs)
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
         return PlaylistDto(
             id=playlist_id,
@@ -804,7 +846,7 @@ class Engine:
     @staticmethod
     def _track_dto(song: Song, fallback_position: int) -> TrackDto:
         return TrackDto(
-            id=song.song_id or song.url or uuid.uuid4().hex,
+            id=track_key(song) or uuid.uuid4().hex,
             position=song.list_position or fallback_position,
             title=song.name,
             artists=list(song.artists),
@@ -817,6 +859,16 @@ class Engine:
 
     def cancel(self) -> None:
         self._cancel.set()
+
+    def begin_job(self) -> None:
+        """Arm a new job before its worker starts.
+
+        Clearing the cancel flag here — synchronously, on the request loop —
+        keeps a Cancel that arrives while the job is still starting up from
+        being erased by the worker thread.
+        """
+        self._cancel.clear()
+        self._progress_state.clear()
 
     @staticmethod
     def search_sources(
@@ -914,9 +966,10 @@ class Engine:
         stored_songs = self._songs.get(playlist_id)
         if stored_songs is None:
             raise ValueError("Unknown or expired playlist id")
+        self._touch_source(playlist_id)
         if track_ids:
             selected = set(track_ids)
-            stored_songs = [song for song in stored_songs if (song.song_id or song.url) in selected]
+            stored_songs = [song for song in stored_songs if track_key(song) in selected]
             if not stored_songs:
                 raise ValueError("No requested tracks exist in this playlist")
         # Downloaders and fallback recovery mutate Song.download_url and other fields.
@@ -924,12 +977,12 @@ class Engine:
         # starts from automatic matching instead of a source chosen by an earlier run.
         songs = copy.deepcopy(stored_songs)
         if source_overrides:
-            known_ids = {song.song_id or song.url for song in songs}
+            known_ids = {track_key(song) for song in songs}
             unknown_ids = set(source_overrides) - known_ids
             if unknown_ids:
                 raise ValueError("A manual source refers to a track outside this job")
             for song in songs:
-                track_id = song.song_id or song.url
+                track_id = track_key(song)
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
         for song in songs:
@@ -942,7 +995,8 @@ class Engine:
             create_source_folder,
         )
         output.mkdir(parents=True, exist_ok=True)
-        self._cancel.clear()
+        # The cancel flag is armed by begin_job() before this worker starts, so a
+        # Cancel sent during job start-up is never cleared here.
         self._progress_state.clear()
 
         settings: dict[str, Any] = {
@@ -984,6 +1038,7 @@ class Engine:
                 throttle_seconds=throttle_seconds,
                 retries=retries,
                 write_m3u=write_m3u,
+                audio_format=audio_format,
             )
         finally:
             downloader.progress_handler.close()
@@ -998,6 +1053,7 @@ class Engine:
         throttle_seconds: float,
         retries: int,
         write_m3u: bool,
+        audio_format: str,
     ) -> None:
         """Run bounded download windows and always leave one final record per track."""
 
@@ -1005,6 +1061,8 @@ class Engine:
         started = time.monotonic()
         worker_count = max(1, min(threads, 4))
         window_size = worker_count * 4
+        blocked_windows = 0
+        warned_blocked = False
         for offset in range(0, len(songs), window_size):
             if self._cancel.is_set():
                 self._emit_cancelled(results_by_id, songs)
@@ -1013,6 +1071,9 @@ class Engine:
                 self._emit_cancelled(results_by_id, songs)
                 return
 
+            # Whole windows failing with a provider block mean the network, not the
+            # track, is refused; recovery work then only deepens the rate limit.
+            provider_blocked = blocked_windows >= _BLOCKED_WINDOW_LIMIT
             window = songs[offset : offset + window_size]
             pending = list(window)
             for attempt in range(max(0, retries) + 1):
@@ -1022,23 +1083,27 @@ class Engine:
                 pending = [
                     song
                     for song in pending
-                    if (record := results_by_id.get(song.song_id or song.url)) is not None
+                    if (record := results_by_id.get(track_key(song))) is not None
                     and not record["success"]
                     and record["error_class"] in RETRYABLE_FAILURE_CLASSES
                 ]
-                if not pending or attempt >= max(0, retries):
+                if not pending or attempt >= max(0, retries) or provider_blocked:
                     break
                 if self._wait_cancellable(_RETRY_BACKOFF_SECONDS * (attempt + 1)):
                     self._emit_cancelled(results_by_id, songs)
                     return
 
-            fallback_pending = [
-                song
-                for song in window
-                if (record := results_by_id.get(song.song_id or song.url)) is not None
-                and not record["success"]
-                and record["error_class"] in _FALLBACK_FAILURE_CLASSES
-            ]
+            fallback_pending = (
+                []
+                if provider_blocked
+                else [
+                    song
+                    for song in window
+                    if (record := results_by_id.get(track_key(song))) is not None
+                    and not record["success"]
+                    and record["error_class"] in _FALLBACK_FAILURE_CLASSES
+                ]
+            )
             for index, song in enumerate(fallback_pending):
                 if self._cancel.is_set():
                     self._emit_cancelled(results_by_id, songs)
@@ -1048,18 +1113,34 @@ class Engine:
                     return
                 self._try_source_fallback(downloader, song, results_by_id)
 
+            blocked_windows = (
+                blocked_windows + 1 if self._window_is_blocked(window, results_by_id) else 0
+            )
+            if blocked_windows >= _BLOCKED_WINDOW_LIMIT and not warned_blocked:
+                warned_blocked = True
+                # Surface the actionable hint while the job runs instead of after it.
+                self._emit(
+                    {
+                        "type": "job_warning",
+                        "failure_class": "youtube_blocked",
+                        "failure_hint": FAILURE_HINTS["youtube_blocked"],
+                    }
+                )
+
             self._emit_window_results(window, songs, results_by_id, started)
 
         results = [
             results_by_id[track_id]
             for song in songs
-            if (track_id := song.song_id or song.url) in results_by_id
+            if (track_id := track_key(song)) in results_by_id
         ]
         failure_class = dominant_failure_class(
             [record["error_class"] for record in results if not record["success"]]
         )
         m3u_path = (
-            self._write_playlist_file(playlist_id, output, songs, results) if write_m3u else None
+            self._write_playlist_file(playlist_id, output, songs, results, audio_format)
+            if write_m3u
+            else None
         )
         self._emit(
             {
@@ -1069,6 +1150,20 @@ class Engine:
                 "failure_class": failure_class,
                 "failure_hint": FAILURE_HINTS.get(failure_class) if failure_class else None,
             }
+        )
+
+    @staticmethod
+    def _window_is_blocked(
+        window: list[Song],
+        results_by_id: dict[str, dict[str, Any]],
+    ) -> bool:
+        """True when every track of a finished window failed with a provider block."""
+        records = [
+            record for song in window if (record := results_by_id.get(track_key(song))) is not None
+        ]
+        return bool(records) and all(
+            not record["success"] and record["error_class"] == "youtube_blocked"
+            for record in records
         )
 
     def _run_attempt(
@@ -1091,6 +1186,9 @@ class Engine:
             if offset and throttle_seconds > 0 and self._wait_cancellable(throttle_seconds):
                 return True
             batch = songs[offset : offset + batch_size]
+            # A source may list the same track twice; identity keeps the two rows apart
+            # even though both carry the same Spotify id.
+            keys_by_instance = {id(song): track_key(song) for song in batch}
             errors_before = len(downloader.errors)
             try:
                 downloaded = downloader.download_multiple_songs(batch)
@@ -1098,16 +1196,18 @@ class Engine:
                 logger.exception("Downloader batch failed; continuing with later tracks")
                 error = f"{exc.__class__.__name__}: {exc}"
                 for song in batch:
-                    track_id = song.song_id or song.url
-                    results_by_id[track_id] = self._result_record(song, None, error)
+                    track_id = track_key(song)
+                    results_by_id[track_id] = self._result_record(song, None, error, track_id)
                 continue
             for resolved_song, path in downloaded:
-                track_id = resolved_song.song_id or resolved_song.url
-                results_by_id[track_id] = self._result_record(resolved_song, path)
+                track_id = keys_by_instance.get(id(resolved_song)) or track_key(resolved_song)
+                results_by_id[track_id] = self._result_record(
+                    resolved_song, path, track_id=track_id
+                )
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
             for song in batch:
-                track_id = song.song_id or song.url
+                track_id = track_key(song)
                 if track_id not in results_by_id:
                     results_by_id[track_id] = self._result_record(
                         song,
@@ -1118,9 +1218,12 @@ class Engine:
 
     @staticmethod
     def _result_record(
-        song: Song, path: Path | str | None, error: str | None = None
+        song: Song,
+        path: Path | str | None,
+        error: str | None = None,
+        track_id: str | None = None,
     ) -> dict[str, Any]:
-        track_id = song.song_id or song.url
+        track_id = track_id or track_key(song)
         return {
             "track_id": track_id,
             "path": str(path) if path else None,
@@ -1139,7 +1242,7 @@ class Engine:
         started: float,
     ) -> None:
         for song in window:
-            record = results_by_id.get(song.song_id or song.url)
+            record = results_by_id.get(track_key(song))
             if record is not None:
                 self._emit({"type": "track_result", **record})
         processed = len(results_by_id)
@@ -1167,7 +1270,7 @@ class Engine:
         results = [
             results_by_id[track_id]
             for song in songs
-            if (track_id := song.song_id or song.url) in results_by_id
+            if (track_id := track_key(song)) in results_by_id
         ]
         self._emit({"type": "job_cancelled", "results": results})
 
@@ -1181,10 +1284,9 @@ class Engine:
         failed = [
             record
             for song in batch
-            if (record := results_by_id.get(song.song_id or song.url)) is not None
-            and not record["success"]
+            if (record := results_by_id.get(track_key(song))) is not None and not record["success"]
         ]
-        songs_by_id = {song.song_id or song.url: song for song in batch}
+        songs_by_id = {track_key(song): song for song in batch}
         unmatched = list(new_errors)
         for record in failed:
             song = songs_by_id[record["track_id"]]
@@ -1218,7 +1320,7 @@ class Engine:
         results_by_id: dict[str, dict[str, Any]],
     ) -> None:
         """Try up to three strong alternate sources, sequentially and conservatively."""
-        track_id = song.song_id or song.url
+        track_id = track_key(song)
         attempted = {_source_identity(getattr(song, "download_url", None))}
         try:
             candidates = self.search_sources(
@@ -1306,27 +1408,113 @@ class Engine:
         output: Path,
         songs: list[Song],
         results: list[dict[str, Any]],
+        audio_format: str,
     ) -> Path | None:
+        """Refresh the playlist file without dropping earlier downloads.
+
+        A retry or a Sync only downloads part of the source, so the file is merged
+        with what is already listed instead of being replaced by the current job.
+        """
         path_by_id = {
             result["track_id"]: result["path"]
             for result in results
             if result["success"] and result["path"]
         }
-        ordered = [
-            path_by_id[track_id]
-            for song in songs
-            if (track_id := song.song_id or song.url) in path_by_id
-        ]
+        name = self._names.get(playlist_id) or "playlist"
+        collection = self._songs.get(playlist_id) or songs
+        order_by_key = {track_key(song): index for index, song in enumerate(collection)}
+        entries: dict[str, tuple[int, int, str]] = {}
+        for sequence, song in enumerate(songs):
+            key = track_key(song)
+            path = path_by_id.get(key)
+            if path:
+                entries[_path_key(path)] = (
+                    order_by_key.get(key, len(order_by_key)),
+                    sequence,
+                    path,
+                )
+
+        target = output / f"{sanitize_filename(name)}.m3u8"
+        previous = self._existing_playlist_entries(target, output)
+        expected_order = (
+            self._expected_order_by_path(collection, output, audio_format) if previous else {}
+        )
+        # A track downloaded again under a new format or naming preset must appear once,
+        # as the file this job produced.
+        replaced = {order for order, _, _ in entries.values()}
+        for sequence, path in enumerate(previous):
+            path_key = _path_key(path)
+            if path_key in entries:
+                continue
+            order = expected_order.get(_path_key(Path(path).with_suffix("")))
+            if order is not None and order in replaced:
+                continue
+            entries[path_key] = (
+                order if order is not None else len(order_by_key),
+                sequence,
+                path,
+            )
+
+        ordered = [path for _, _, path in sorted(entries.values(), key=lambda item: item[:2])]
         if not ordered:
             return None
         try:
-            return write_m3u8(output, self._names.get(playlist_id) or "playlist", ordered)
+            return write_m3u8(output, name, ordered)
         except OSError:
             logger.exception("Failed to write m3u8 playlist file")
             return None
 
+    @staticmethod
+    def _existing_playlist_entries(target: Path, output: Path) -> list[str]:
+        """Return still-present tracks already listed in a previous playlist file."""
+        try:
+            raw_lines = target.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        existing: list[str] = []
+        for line in raw_lines:
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            candidate = Path(entry)
+            resolved = candidate if candidate.is_absolute() else output / candidate
+            try:
+                if resolved.is_file():
+                    existing.append(str(resolved))
+            except OSError:
+                continue
+        return existing
+
+    @staticmethod
+    def _expected_order_by_path(
+        collection: list[Song],
+        output: Path,
+        audio_format: str,
+    ) -> dict[str, int]:
+        """Map the file each source track could have produced onto its playlist position.
+
+        Every naming preset is considered and the extension is ignored, so a track
+        downloaded by an earlier run under other settings is still recognized as the
+        same playlist position instead of being listed twice.
+        """
+        expected: dict[str, int] = {}
+        templates = [str(output / preset) for preset in NAMING_PRESETS.values()]
+        for index, song in enumerate(collection):
+            for template in templates:
+                try:
+                    base_path = spotdl_create_file_name(
+                        song=song,
+                        template=template,
+                        file_extension=audio_format,
+                        restrict="none",
+                    )
+                except Exception:  # noqa: BLE001 - naming depends on provider metadata
+                    continue
+                expected.setdefault(_path_key(base_path.with_suffix("")), index)
+        return expected
+
     def _on_progress(self, tracker: SongTracker, message: str) -> None:
-        track_id = tracker.song.song_id or tracker.song.url
+        track_id = track_key(tracker.song)
         state = (int(tracker.progress), message, tracker.path)
         if self._progress_state.get(track_id) == state:
             return

@@ -308,6 +308,41 @@ public sealed class BackendClient : IAsyncDisposable
             _runLog.Write("track", $"{(success ? "DONE" : "FAILED")} {trackId} [{errorClass}] {detail}");
             return;
         }
+        // Resolve and candidate payloads carry the whole track or candidate list; the log
+        // keeps provider diagnostics, not a copy of every source's metadata.
+        if (type == "playlist_resolved")
+        {
+            var hasPlaylist = root.TryGetProperty("playlist", out var playlist) &&
+                playlist.ValueKind == JsonValueKind.Object;
+            var name = (hasPlaylist ? ReadString(playlist, "name") : null) ?? "unknown";
+            var sourceType = (hasPlaylist ? ReadString(playlist, "source_type") : null) ?? "unknown";
+            var count = hasPlaylist &&
+                playlist.TryGetProperty("track_count", out var countElement) &&
+                countElement.ValueKind == JsonValueKind.Number
+                ? countElement.GetInt32()
+                : 0;
+            _runLog.Write("event", $"playlist_resolved {sourceType} \"{name}\" with {count} tracks");
+            return;
+        }
+        if (type == "sources_found")
+        {
+            var count = root.TryGetProperty("candidates", out var candidates) &&
+                candidates.ValueKind == JsonValueKind.Array
+                ? candidates.GetArrayLength()
+                : 0;
+            _runLog.Write("event", $"sources_found {count} candidates");
+            return;
+        }
+        if (type == "job_completed" || type == "job_cancelled")
+        {
+            var results = root.TryGetProperty("results", out var resultsElement) &&
+                resultsElement.ValueKind == JsonValueKind.Array
+                ? resultsElement.GetArrayLength()
+                : 0;
+            var failureClass = ReadString(root, "failure_class") ?? "none";
+            _runLog.Write("event", $"{type} results={results} failure_class={failureClass}");
+            return;
+        }
         _runLog.Write("event", rawLine);
     }
 
@@ -437,27 +472,67 @@ public sealed class BackendClient : IAsyncDisposable
 
     private async Task StopBackendAsync()
     {
-        if (_process is { HasExited: false })
+        var process = _process;
+        if (process is null)
         {
-            try
-            {
-                await SendCommandAsync("shutdown", new { });
-                // Closing stdin gives the backend a second, EOF-based exit path.
-                _process.StandardInput.Close();
-            }
-            catch
-            {
-                // Best-effort shutdown during app exit.
-            }
-
-            if (!_process.WaitForExit(1500))
-            {
-                _process.Kill(entireProcessTree: true);
-                _process.WaitForExit(2000);
-            }
+            return;
         }
 
-        _process?.Dispose();
-        _process = null;
+        try
+        {
+            if (!process.HasExited)
+            {
+                try
+                {
+                    await SendCommandAsync("shutdown", new { });
+                    // Closing stdin gives the backend a second, EOF-based exit path.
+                    process.StandardInput.Close();
+                }
+                catch
+                {
+                    // Best-effort shutdown during app exit.
+                }
+
+                // Waiting asynchronously keeps the window responsive while the backend
+                // stops its converter and downloader children. The window is longer than
+                // the backend's own worker join so it can exit before being killed.
+                if (!await WaitForExitAsync(process, TimeSpan.FromSeconds(6)))
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception exception) when (
+                        exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+                    {
+                        // The backend exited between the wait and the kill.
+                    }
+
+                    await WaitForExitAsync(process, TimeSpan.FromSeconds(2));
+                }
+            }
+        }
+        finally
+        {
+            process.Dispose();
+            if (ReferenceEquals(_process, process))
+            {
+                _process = null;
+            }
+        }
+    }
+
+    private static async Task<bool> WaitForExitAsync(Process process, TimeSpan timeout)
+    {
+        using var deadline = new CancellationTokenSource(timeout);
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
     }
 }

@@ -26,7 +26,7 @@
                   Click="UpdateButton_Click" />
           <Button x:Name="ResumeButton" Content="Resume last job" Visibility="Collapsed"
                   Margin="0,0,10,0" Click="ResumeButton_Click" />
-          <Button Content="Library" Width="90" Margin="0,0,10,0" Click="LibraryButton_Click" />
+          <Button x:Name="LibraryButton" Content="Library" Width="90" Margin="0,0,10,0" Click="LibraryButton_Click" />
           <Button Content="Run log" Width="90" Margin="0,0,10,0" Click="OpenRunLogButton_Click"
                   ToolTip="Open exact provider errors and completed-track history for this app session" />
           <Button Content="Settings" Width="100" Click="SettingsButton_Click" />
@@ -49,8 +49,8 @@
                  VerticalContentAlignment="Center"
                  ToolTip="Paste a public Spotify playlist, album, or track URL — or type an artist and title to search YouTube Music"
                  Text="" />
-        <Button Grid.Row="0" Grid.Column="1" Content="Import CSV/JSON" Margin="0,0,10,0"
-                Click="ImportManifestButton_Click" />
+        <Button x:Name="ImportManifestButton" Grid.Row="0" Grid.Column="1" Content="Import CSV/JSON"
+                Margin="0,0,10,0" Click="ImportManifestButton_Click" />
         <Button x:Name="AnalyzeButton" Grid.Row="0" Grid.Column="2" Content="Analyze link"
                 Click="AnalyzeButton_Click" Background="#4F7DFF" Foreground="White" />
         <Grid Grid.Row="1" Grid.ColumnSpan="3" Margin="0,12,0,0">

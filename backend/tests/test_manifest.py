@@ -57,3 +57,31 @@ def test_rejects_rows_without_required_metadata(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="requires title and artist"):
         load_manifest(str(path))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("3:45", 225),
+        ("1:02:03", 3723),
+        ("90", 90),
+    ],
+)
+def test_accepts_clock_and_numeric_durations(tmp_path: Path, value: str, expected: int) -> None:
+    path = tmp_path / "clock.csv"
+    path.write_text(
+        f"title,artist,duration\nSong One,Artist One,{value}\n",
+        encoding="utf-8",
+    )
+
+    _, songs = load_manifest(str(path))
+
+    assert songs[0].duration == expected
+
+
+def test_reports_an_actionable_error_for_unparsable_duration(tmp_path: Path) -> None:
+    path = tmp_path / "bad-duration.csv"
+    path.write_text("title,artist,duration\nSong One,Artist One,soon\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="mm:ss"):
+        load_manifest(str(path))

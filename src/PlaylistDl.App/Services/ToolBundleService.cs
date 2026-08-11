@@ -29,13 +29,17 @@ public static class ToolBundleService
                 "tools",
                 version);
             var backend = Path.Combine(target, "playlistdl-backend.exe");
-            if (File.Exists(backend) && VerifyManifest(target))
+            using var archive = new ZipArchive(resource, ZipArchiveMode.Read);
+            // The expected hashes come from the manifest inside the executable, never from
+            // the extracted copy: an extracted manifest could be rewritten to match tampered
+            // helpers in this user-writable folder.
+            var expected = ReadEmbeddedManifest(archive);
+            if (File.Exists(backend) && VerifyManifest(target, expected))
             {
                 return backend;
             }
 
             Directory.CreateDirectory(target);
-            using var archive = new ZipArchive(resource, ZipArchiveMode.Read);
             var root = Path.GetFullPath(target) + Path.DirectorySeparatorChar;
             foreach (var entry in archive.Entries)
             {
@@ -55,7 +59,7 @@ public static class ToolBundleService
                 entry.ExtractToFile(destination, overwrite: true);
             }
 
-            if (!File.Exists(backend) || !VerifyManifest(target))
+            if (!File.Exists(backend) || !VerifyManifest(target, expected))
             {
                 throw new InvalidDataException("Embedded tool bundle failed integrity validation.");
             }
@@ -66,16 +70,22 @@ public static class ToolBundleService
 
     public static string? TryResolveBackendVersion()
     {
-        var backend = TryResolveBackend();
-        if (backend is null)
+        if (TryResolveBackend() is null)
         {
             return null;
         }
 
-        var manifestPath = Path.Combine(Path.GetDirectoryName(backend)!, "manifest.json");
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            var assembly = Assembly.GetExecutingAssembly();
+            using var resource = assembly.GetManifestResourceStream(ResourceName);
+            if (resource is null)
+            {
+                return null;
+            }
+
+            using var archive = new ZipArchive(resource, ZipArchiveMode.Read);
+            using var document = JsonDocument.Parse(ReadEmbeddedManifest(archive));
             return document.RootElement.TryGetProperty("backend_version", out var version)
                 ? version.GetString()
                 : null;
@@ -84,32 +94,33 @@ public static class ToolBundleService
         {
             return null;
         }
-        catch (JsonException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
+        catch (Exception exception) when (
+            exception is JsonException or InvalidDataException)
         {
             return null;
         }
     }
 
-    private static bool VerifyManifest(string directory)
+    private static string ReadEmbeddedManifest(ZipArchive archive)
     {
-        var manifestPath = Path.Combine(directory, "manifest.json");
-        if (!File.Exists(manifestPath))
-        {
-            return false;
-        }
+        var entry = archive.GetEntry("manifest.json")
+            ?? throw new InvalidDataException("Embedded tool bundle has no manifest.");
+        using var stream = entry.Open();
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 
+    private static bool VerifyManifest(string directory, string manifestJson)
+    {
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            using var document = JsonDocument.Parse(manifestJson);
             foreach (var file in document.RootElement.GetProperty("files").EnumerateArray())
             {
                 var name = file.GetProperty("name").GetString();
                 var expected = file.GetProperty("sha256").GetString();
-                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(expected))
+                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(expected) ||
+                    Path.GetFileName(name) != name)
                 {
                     return false;
                 }

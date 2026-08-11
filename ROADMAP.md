@@ -36,7 +36,7 @@ Version 2.0.0 is feature-complete for current Windows personal-use scope. Mainte
 
 - `uv run --project backend --extra dev ruff check backend`
 - `uv run --project backend --extra dev ruff format --check backend`
-- `uv run --project backend --extra dev python -m pytest --cov=playlistdl_backend --cov-fail-under=80`
+- `uv run --project backend --extra dev python -m pytest backend/tests --cov=playlistdl_backend --cov-fail-under=80`
 - `./scripts/audit-python-dependencies.ps1`
 - `dotnet format PlaylistDl.slnx --verify-no-changes`
 - `dotnet build PlaylistDl.slnx --configuration Release`

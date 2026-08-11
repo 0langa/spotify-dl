@@ -41,3 +41,15 @@ def test_write_m3u8_sanitizes_collection_name(tmp_path: Path) -> None:
 
     assert target.name == "Bad_Name__Mix_.m3u8"
     assert target.exists()
+
+
+def test_sanitize_filename_clamps_long_collection_names() -> None:
+    sanitized = sanitize_filename("A" * 400)
+
+    assert len(sanitized) == 120
+    assert set(sanitized) == {"A"}
+
+
+@pytest.mark.parametrize("raw", ["CON", "nul", "LPT1", "com9.mp3"])
+def test_sanitize_filename_escapes_reserved_windows_names(raw: str) -> None:
+    assert sanitize_filename(raw).startswith("_")

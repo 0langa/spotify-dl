@@ -36,7 +36,10 @@ import playlistdl_backend.engine
         capture_output=True,
         check=False,
         text=True,
-        timeout=30,
+        # Importing spotDL cold takes ~10 s locally and much longer on a loaded CI
+        # runner with a cold file cache; a tight bound here fails for timing, not for
+        # the module boundary this test is about.
+        timeout=180,
     )
     assert result.returncode == 0, result.stderr
 

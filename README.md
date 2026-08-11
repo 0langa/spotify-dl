@@ -15,7 +15,7 @@ Requirements: Windows 10 22H2+ x64, .NET 10 SDK, uv, FFmpeg, Deno.
 uv sync --project backend --extra dev
 uv run --project backend --extra dev ruff check backend
 uv run --project backend --extra dev ruff format --check backend
-uv run --project backend --extra dev python -m pytest
+uv run --project backend --extra dev python -m pytest backend/tests
 dotnet build PlaylistDl.slnx
 dotnet run --project src/PlaylistDl.App/PlaylistDl.App.csproj
 ```
@@ -38,7 +38,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Job library with restart-safe resume, per-source progress history, and one-click playlist Sync that downloads only new or unfinished tracks
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags, cover art, and optional embedded lyrics
 - Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
-- Optional .m3u8 playlist export preserving track order, plus Open folder shortcut
+- Optional .m3u8 playlist export preserving track order and merging with earlier runs of the same source, plus Open folder shortcut
 - Optional YouTube cookie file for authenticated/Premium formats
 - Update awareness: silent daily startup check plus on-demand check against published GitHub releases
 - One downloadable self-contained Windows x64 executable
@@ -47,7 +47,7 @@ Session logs live under `%LOCALAPPDATA%\PlaylistDL\logs` and can be opened from 
 
 ### Track manifest format
 
-Use **Import CSV/JSON** when Spotify resolution is unavailable or when metadata comes from another source. Every row requires a title and artist. Supported common fields include album, duration, Spotify URL/URI, ISRC, cover URL, year, release date, and track number.
+Use **Import CSV/JSON** when Spotify resolution is unavailable or when metadata comes from another source. Every row requires a title and artist. Supported common fields include album, duration, Spotify URL/URI, ISRC, cover URL, year, release date, and track number. Durations may be seconds, milliseconds (`Duration (ms)`), or `mm:ss`/`h:mm:ss`.
 
 Minimal CSV:
 
@@ -73,6 +73,7 @@ Minimal JSON:
 - Spotify is used only during source resolution; downloads use retained metadata and do not require a second Spotify session.
 - Cancellation takes effect after currently active download batch finishes.
 - Public matching cannot recover audio absent from available providers. Duration-checked alternates are tried automatically after recoverable failures; use the per-track Source dialog when no safe match exists.
+- When YouTube blocks or rate-limits the whole network, retries and alternate-source searches stop for the rest of the job and the guidance banner appears immediately instead of after every remaining track has failed.
 - The candidate search and update check need direct network access; strict per-app firewalls can block them (use the in-app Diagnose button).
 - If security software blocks the extracted backend path, Settings can select an allowed `playlistdl-backend.exe`; outdated saved overrides are rejected and replaced by the current bundled backend before a job starts.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
@@ -80,7 +81,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.0.0
+./scripts/build-release.ps1 -Version 2.0.1
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1

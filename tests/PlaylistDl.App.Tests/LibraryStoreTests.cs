@@ -90,6 +90,20 @@ public sealed class LibraryStoreTests : IDisposable
     }
 
     [Fact]
+    public void MigrationDoesNotResurrectAJobDeletedFromTheLibrary()
+    {
+        var lastJob = Job("https://open.spotify.com/playlist/legacy", "Legacy");
+        Store.MigrateFromLastJob(lastJob);
+        Assert.NotNull(Store.Load(lastJob.SourceUrl));
+
+        Store.Delete(lastJob.SourceUrl);
+        Store.MigrateFromLastJob(lastJob);
+
+        Assert.Null(Store.Load(lastJob.SourceUrl));
+        Assert.Empty(Store.List());
+    }
+
+    [Fact]
     public void KeyIsStableAndFilenameSafe()
     {
         var key = LibraryStore.KeyFor("https://open.spotify.com/playlist/one?si=abc");

@@ -5,10 +5,15 @@ import logging
 import sys
 import threading
 import traceback
+from collections.abc import Callable
 from typing import Any, TextIO
 
 from playlistdl_backend import __version__
 from playlistdl_backend.engine import Engine
+
+# Stays below the app's graceful stop window so the backend can exit on its own before
+# the app force-kills the process tree.
+_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 4.0
 
 
 def format_exception(exc: Exception) -> str:
@@ -36,29 +41,68 @@ class Bridge:
     def run(self) -> None:
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
         self.emit({"type": "ready", "version": __version__, "protocol": 1})
-        for line in self._input:
-            line = line.strip()
-            if not line:
-                continue
-            request_id: str | None = None
+        try:
+            for line in self._input:
+                line = line.strip()
+                if not line:
+                    continue
+                request_id: str | None = None
+                try:
+                    request = json.loads(line)
+                    request_id = request.get("id")
+                    if self._dispatch(request):
+                        return
+                except Exception as exc:  # noqa: BLE001 - protocol boundary
+                    self.emit(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": format_exception(exc),
+                            "detail": (
+                                traceback.format_exc()
+                                if logging.getLogger().isEnabledFor(logging.DEBUG)
+                                else None
+                            ),
+                        }
+                    )
+        finally:
+            # Interpreter shutdown kills the daemon worker without stopping the
+            # converter/downloader child processes it started. Give the cancelled
+            # worker a bounded moment to unwind so no ffmpeg/yt-dlp child is orphaned.
+            self.stop_worker()
+
+    def stop_worker(self, timeout: float = _WORKER_SHUTDOWN_TIMEOUT_SECONDS) -> None:
+        """Cancel the download worker and wait briefly for it to finish."""
+        worker = self._worker
+        if worker is None or not worker.is_alive():
+            return
+        self._engine.cancel()
+        worker.join(timeout=timeout)
+
+    def _run_off_loop(
+        self,
+        request_id: str | None,
+        handler: Callable[[], dict[str, Any]],
+    ) -> None:
+        """Answer one network-bound request without blocking the request loop."""
+
+        def worker() -> None:
             try:
-                request = json.loads(line)
-                request_id = request.get("id")
-                if self._dispatch(request):
-                    return
-            except Exception as exc:  # noqa: BLE001 - protocol boundary
-                self.emit(
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "message": format_exception(exc),
-                        "detail": (
-                            traceback.format_exc()
-                            if logging.getLogger().isEnabledFor(logging.DEBUG)
-                            else None
-                        ),
-                    }
-                )
+                self.emit({**handler(), "request_id": request_id})
+            except Exception as exc:  # noqa: BLE001 - request boundary
+                logging.exception("Background request failed")
+                try:
+                    self.emit(
+                        {
+                            "type": "error",
+                            "request_id": request_id,
+                            "message": format_exception(exc),
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - stdout closed during shutdown
+                    logging.exception("Could not report a background request failure")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _dispatch(self, request: dict[str, Any]) -> bool | None:
         """Handle one request; a truthy return stops the read loop."""
@@ -72,22 +116,29 @@ class Bridge:
             self.emit({"type": "runtime_ok", "request_id": request_id})
             return
         if command == "diagnose":
-            report = self._engine.diagnose()
-            self.emit({"type": "diagnose_result", "request_id": request_id, **report})
+            # Endpoint probes take seconds; running them off the read loop keeps
+            # cancel and progress traffic flowing while a diagnosis is in flight.
+            self._run_off_loop(
+                request_id,
+                lambda: {"type": "diagnose_result", **self._engine.diagnose()},
+            )
             return
         if command == "search_sources":
-            candidates = self._engine.search_sources(
-                title=str(request.get("title", "")),
-                artist=str(request.get("artist", "")),
-                duration_seconds=int(request.get("duration_seconds", 0)),
-                limit=int(request.get("limit", 8)),
-            )
-            self.emit(
-                {
+            title = str(request.get("title", ""))
+            artist = str(request.get("artist", ""))
+            duration_seconds = int(request.get("duration_seconds", 0))
+            limit = int(request.get("limit", 8))
+            self._run_off_loop(
+                request_id,
+                lambda: {
                     "type": "sources_found",
-                    "request_id": request_id,
-                    "candidates": candidates,
-                }
+                    "candidates": self._engine.search_sources(
+                        title=title,
+                        artist=artist,
+                        duration_seconds=duration_seconds,
+                        limit=limit,
+                    ),
+                },
             )
             return
         if command == "resolve":
@@ -132,6 +183,9 @@ class Bridge:
             self._engine.ensure_startable(
                 str(request["playlist_id"]), str(request.get("format", "mp3"))
             )
+            # Arm the job here, on the request loop, so a cancel that arrives while the
+            # worker is still starting up is not cleared by the worker itself.
+            self._engine.begin_job()
             self._worker = threading.Thread(
                 target=self._download_worker,
                 kwargs={

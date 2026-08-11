@@ -23,7 +23,7 @@ class FakeSession:
         pass
 
 
-def test_frozen_transport_uses_requests_and_preserves_session(monkeypatch) -> None:
+def test_frozen_transport_uses_requests_and_preserves_session() -> None:
     from spotapi.http.request import TLSClient
 
     original = TLSClient.build_request
@@ -55,5 +55,7 @@ def test_frozen_transport_uses_requests_and_preserves_session(monkeypatch) -> No
         ]
         assert client.cookies["sp_t"] == "session-cookie"
     finally:
-        monkeypatch.setattr(TLSClient, "build_request", original)
+        # monkeypatch would restore the patched function at teardown and leak the
+        # frozen transport into every later test, so restore it directly.
+        TLSClient.build_request = original
         frozen_transport._close_sessions()
