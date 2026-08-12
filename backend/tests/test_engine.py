@@ -93,7 +93,7 @@ def _fake_song(name: str, position: int) -> SimpleNamespace:
 @pytest.fixture
 def engine(monkeypatch: pytest.MonkeyPatch) -> Engine:
     instance = Engine(emit=lambda event: None)
-    monkeypatch.setattr(instance, "_ensure_spotify", lambda: None)
+    monkeypatch.setattr(instance, "_ensure_spotify", lambda *args, **kwargs: None)
     return instance
 
 

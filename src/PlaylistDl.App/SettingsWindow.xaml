@@ -61,6 +61,21 @@
         <TextBlock Text="Use when antivirus or VPN software blocks the bundled backend path. Changes activate immediately after Save."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
 
+        <TextBlock Text="Spotify resolution" FontWeight="SemiBold" Margin="0,20,0,0" />
+        <CheckBox x:Name="UseOfficialSpotifyBox" Content="Use my own Spotify API credentials"
+                  Foreground="White" Margin="0,10,0,0" Checked="UseOfficialSpotifyBox_Toggled"
+                  Unchecked="UseOfficialSpotifyBox_Toggled" />
+        <TextBlock Text="Optional. The zero-setup public resolver is used by default; supply credentials from the Spotify developer dashboard to resolve through the official Web API when the public path breaks."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+        <TextBlock Text="Client ID" Foreground="#AEB6C5" Margin="0,10,0,0" />
+        <TextBox x:Name="SpotifyClientIdBox" Margin="0,4,0,0" Height="32"
+                 VerticalContentAlignment="Center" IsEnabled="False" />
+        <TextBlock Text="Client secret" Foreground="#AEB6C5" Margin="0,8,0,0" />
+        <PasswordBox x:Name="SpotifyClientSecretBox" Margin="0,4,0,0" Height="32"
+                     VerticalContentAlignment="Center" IsEnabled="False" />
+        <TextBlock x:Name="SpotifyCredentialStatus" Foreground="#AEB6C5" TextWrapping="Wrap"
+                   Margin="0,6,0,0" />
+
         <TextBlock Text="File organization" FontWeight="SemiBold" Margin="0,20,0,0" />
         <ComboBox x:Name="NamingPresetBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
           <ComboBoxItem Tag="position_artist_title">01 - Artist - Title</ComboBoxItem>
@@ -99,6 +114,10 @@
         <TextBlock Text="Writes an ordered playlist file next to downloaded tracks."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
         <CheckBox x:Name="EmbedLyricsBox" Content="Embed lyrics into downloaded files when available" Foreground="White" Margin="0,12,0,0" />
+        <CheckBox x:Name="NormalizeLoudnessBox" Content="Normalize loudness to the streaming target (-14 LUFS)"
+                  Foreground="White" Margin="0,10,0,0" />
+        <TextBlock Text="Applies an EBU R128 loudness filter while converting. This re-encodes M4A and Opus instead of copying the source stream, so those downloads take longer."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
         <TextBlock Text="Fetches lyrics from public providers and stores them in audio tags."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
         <CheckBox x:Name="AutoUpdateCheckBox" Content="Check for updates on startup (once a day)" Foreground="White" Margin="0,12,0,8" />

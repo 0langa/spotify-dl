@@ -1,24 +1,14 @@
 # Playlist DL roadmap
 
-Current baseline: v2.2.0. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
+Current baseline: v2.3.0. Completed milestones live in [CHANGELOG.md](CHANGELOG.md).
 
 ## Finished-for-now baseline
 
-Version 2.0.1 closed every defect found by a full audit of the 2.0.0 code, 2.1.0 completed the library and queue depth milestone (persistent, reorderable queue, per-job failure reports, cross-job duplicate handling), and 2.2.0 added the verified in-app updater. The Windows personal-use scope stays feature-complete. Maintenance should prioritize provider compatibility, security updates, bug fixes, and preservation of release gates. Network providers remain external dependencies; their availability cannot be guaranteed by Playlist DL.
+Version 2.0.1 closed every defect found by a full audit of the 2.0.0 code, 2.1.0 completed the library and queue depth milestone (persistent, reorderable queue, per-job failure reports, cross-job duplicate handling), 2.2.0 added the verified in-app updater, and 2.3.0 added the optional official Spotify Web API path together with the audio-finishing work (loudness normalization, cover art, drag and drop). The Windows personal-use scope stays feature-complete. Maintenance should prioritize provider compatibility, security updates, bug fixes, and preservation of release gates. Network providers remain external dependencies; their availability cannot be guaranteed by Playlist DL.
 
 ## Optional future work
 
-1. Official Spotify API escape hatch
-   - Optional user-supplied client credentials.
-   - Keep unofficial public-link resolver as zero-setup default.
-   - Store secrets using Windows Credential Manager, never settings JSON.
-
-2. Audio finishing
-   - Optional ReplayGain or FFmpeg loudness normalization.
-   - Cover-art column and richer metadata inspection.
-   - Drag-and-drop Spotify links and manifest files.
-
-3. Distribution trust
+1. Distribution trust
    - Authenticode signing when a trusted certificate is available.
    - Keep checksum verification, frozen-backend lifecycle smoke, Spotify resolver smoke, and malware scan in release CI.
 

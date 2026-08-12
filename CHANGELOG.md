@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 2.3.0 - 2026-08-12
+
+### Added
+
+- Optional official Spotify Web API resolution. Supply your own client ID and secret under Settings to resolve playlists, albums, and tracks through the official API when the zero-setup public resolver breaks after a platform change.
+- Credentials are stored in Windows Credential Manager for the signed-in Windows account. Settings keeps only the on/off flag, and the backend receives the pair per request without storing, logging, or echoing it. Rejected credentials report what to check instead of the provider's raw message, which can quote the secret.
+
+### Changed
+
+- Switching credentials on or off replaces the running resolver in place, so the change takes effect on the next resolve without restarting the app.
+
+- Optional loudness normalization to the EBU R128 streaming target (-14 LUFS), applied while converting.
+- Cover art column in the track list.
+- Drag and drop a Spotify link or a CSV/JSON manifest onto the window to load it.
+
+### Fixed
+
+- Track lengths of an hour or more are shown in full instead of dropping the hours.
+- The job library labels a saved free-text search as Search instead of Playlist.
+
 ## 2.2.0 - 2026-08-12
 
 ### Added

@@ -35,7 +35,20 @@ public sealed class TrackItem : INotifyPropertyChanged
     public int DurationSeconds { get; init; }
 
     [JsonIgnore]
-    public string DurationText => TimeSpan.FromSeconds(DurationSeconds).ToString(@"m\:ss");
+    public string DurationText
+    {
+        get
+        {
+            // "m\:ss" drops whole hours, so a long mix would read as a short track.
+            var duration = TimeSpan.FromSeconds(DurationSeconds);
+            return duration.TotalHours >= 1
+                ? $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}"
+                : $"{duration.Minutes}:{duration.Seconds:00}";
+        }
+    }
+
+    [JsonPropertyName("cover_url")]
+    public string? CoverUrl { get; init; }
 
     [JsonPropertyName("spotify_url")]
     public string SpotifyUrl { get; init; } = string.Empty;

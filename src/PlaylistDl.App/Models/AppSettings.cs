@@ -30,11 +30,18 @@ public sealed class AppSettings
 
     public bool EmbedLyrics { get; set; }
 
+    /// <summary>Normalize output loudness to the EBU R128 streaming target.</summary>
+    public bool NormalizeLoudness { get; set; }
+
     /// <summary>What to do when a track was already downloaded by an earlier job.</summary>
     /// <remarks>One of download, skip, copy, hardlink.</remarks>
     public string DuplicatePolicy { get; set; } = "download";
 
     public bool AutoUpdateCheck { get; set; } = true;
+
+    /// <summary>Use the official Spotify Web API with credentials from Credential Manager.</summary>
+    /// <remarks>Only this flag is stored here; the credentials never enter this file.</remarks>
+    public bool UseOfficialSpotifyApi { get; set; }
 
     public DateTimeOffset? LastUpdateCheckUtc { get; set; }
 }

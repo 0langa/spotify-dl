@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private readonly JobStore _jobStore = new();
     private readonly LibraryStore _library = new();
     private readonly QueueStore _queueStore = new();
+    private readonly CredentialStore _credentialStore = new();
     private readonly List<QueueJobSummary> _queueReport = [];
     private const int PreparationFailureLimit = 3;
     private readonly UpdateService _updateService = new();
@@ -496,6 +497,78 @@ public partial class MainWindow : Window
     private static Version CurrentVersion() =>
         Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
 
+    /// <summary>Accepts a dropped Spotify link or CSV/JSON manifest.</summary>
+    private void Window_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = DroppedSource(e.Data) is null ? DragDropEffects.None : DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object sender, DragEventArgs e)
+    {
+        var dropped = DroppedSource(e.Data);
+        if (dropped is null || _jobRunning || _queueRunning || _sourceOperationCts is not null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var (path, url) = dropped.Value;
+        if (path is not null)
+        {
+            using var operation = BeginSourceOperation("Importing dropped manifest…");
+            if (operation is null)
+            {
+                return;
+            }
+            try
+            {
+                PlaylistUrlBox.Text = path;
+                await ImportManifestAsync(path, cancellationToken: operation.Token);
+                SaveCurrentJob();
+            }
+            catch (OperationCanceledException)
+            {
+                StatusText.Text = "Track manifest import cancelled";
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                StatusText.Text = $"Dropped manifest could not be imported: {exception.Message}";
+            }
+            finally
+            {
+                EndSourceOperation(operation);
+            }
+
+            return;
+        }
+
+        PlaylistUrlBox.Text = url;
+        AnalyzeButton_Click(sender, e);
+    }
+
+    /// <summary>Returns the manifest path or Spotify URL a drop carries, if any.</summary>
+    private static (string? Path, string? Url)? DroppedSource(IDataObject data)
+    {
+        if (data.GetDataPresent(DataFormats.FileDrop) &&
+            data.GetData(DataFormats.FileDrop) is string[] files)
+        {
+            var manifest = files.FirstOrDefault(file =>
+                file.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
+                file.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
+            return manifest is null ? null : (manifest, null);
+        }
+
+        if (data.GetDataPresent(DataFormats.UnicodeText) &&
+            data.GetData(DataFormats.UnicodeText) is string text &&
+            SpotifyInput.TryNormalize(text, out var url))
+        {
+            return (null, url);
+        }
+
+        return null;
+    }
+
     private void QueueButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new QueueWindow(_queue, _queueReport, _queueRunning) { Owner = this };
@@ -621,7 +694,7 @@ public partial class MainWindow : Window
                         : job.SourceUrl,
                     limit = 12,
                 }),
-            _ => await _backend.RequestAsync("resolve", new { url = job.SourceUrl }),
+            _ => await _backend.RequestAsync("resolve", ResolvePayload(job.SourceUrl)),
         };
 
         var playlist = response.GetProperty("playlist")
@@ -730,6 +803,7 @@ public partial class MainWindow : Window
                     retries = 1,
                     ytdlp_args = snapshot.YtDlpArgs,
                     embed_lyrics = snapshot.EmbedLyrics,
+                    normalize_loudness = snapshot.NormalizeLoudness,
                     duplicate_policy = snapshot.DuplicatePolicy,
                     existing_files = existingFiles,
                 });
@@ -845,6 +919,14 @@ public partial class MainWindow : Window
 
     private async void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_jobRunning || _queueRunning)
+        {
+            // Settings are snapshotted per job; changing the resolver mid-run would make
+            // the jobs of one queue run disagree about how their source was resolved.
+            StatusText.Text = "Finish or cancel the running download before changing settings";
+            return;
+        }
+
         var previousBackend = _settings.BackendExecutable;
         var dialog = new SettingsWindow(_settings) { Owner = this };
         if (dialog.ShowDialog() == true)
@@ -1394,8 +1476,36 @@ public partial class MainWindow : Window
         SavedJob? restore = null,
         CancellationToken cancellationToken = default)
     {
-        var response = await _backend.RequestAsync("resolve", new { url }, cancellationToken);
+        var response = await _backend.RequestAsync("resolve", ResolvePayload(url), cancellationToken);
         ApplyResolvedPlaylist(response, restore);
+    }
+
+    /// <summary>Builds the resolve request, adding official credentials when opted in.</summary>
+    /// <remarks>
+    /// The credentials are read from Windows Credential Manager for each request and are
+    /// never written to settings, the saved job, or the run log.
+    /// </remarks>
+    private object ResolvePayload(string url)
+    {
+        SpotifyCredentials? credentials = null;
+        if (_settings.UseOfficialSpotifyApi)
+        {
+            credentials = _credentialStore.Load();
+            if (credentials is null)
+            {
+                // Falling back silently would look like the official API is in use.
+                StatusText.Text =
+                    "Stored Spotify credentials could not be read — using the public resolver. " +
+                    "Re-enter them under Settings.";
+            }
+        }
+
+        return new
+        {
+            url,
+            spotify_client_id = credentials?.ClientId,
+            spotify_client_secret = credentials?.ClientSecret,
+        };
     }
 
     private async Task ImportManifestAsync(

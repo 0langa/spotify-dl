@@ -16,6 +16,19 @@ from playlistdl_backend.engine import Engine
 _WORKER_SHUTDOWN_TIMEOUT_SECONDS = 4.0
 
 
+def spotify_credentials(request: dict[str, Any]) -> tuple[str, str] | None:
+    """Read optional official Spotify credentials from one request.
+
+    They are passed per request and never stored or echoed back, so a secret cannot
+    end up in the run log or in any settings file written by the backend.
+    """
+    client_id = str(request.get("spotify_client_id") or "").strip()
+    client_secret = str(request.get("spotify_client_secret") or "").strip()
+    if not client_id or not client_secret:
+        return None
+    return client_id, client_secret
+
+
 def format_exception(exc: Exception) -> str:
     """Include safe provider detail hidden by some wrapper exceptions."""
     message = str(exc)
@@ -142,7 +155,10 @@ class Bridge:
             )
             return
         if command == "resolve":
-            playlist = self._engine.resolve(str(request["url"]))
+            playlist = self._engine.resolve(
+                str(request["url"]),
+                spotify_credentials(request),
+            )
             self.emit(
                 {
                     "type": "playlist_resolved",
@@ -205,6 +221,7 @@ class Bridge:
                     "retries": int(request.get("retries", 1)),
                     "ytdlp_args": request.get("ytdlp_args"),
                     "embed_lyrics": bool(request.get("embed_lyrics", False)),
+                    "normalize_loudness": bool(request.get("normalize_loudness", False)),
                     "duplicate_policy": str(request.get("duplicate_policy", "download")),
                     "existing_files": request.get("existing_files"),
                 },

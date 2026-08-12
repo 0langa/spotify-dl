@@ -14,6 +14,7 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
             "album" => "Album",
             "track" => "Track",
             "import" => "Import",
+            "search" => "Search",
             _ => "Playlist",
         };
         return new LibraryEntry(

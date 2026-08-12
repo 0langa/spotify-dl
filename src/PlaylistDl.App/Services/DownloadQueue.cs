@@ -14,7 +14,8 @@ public sealed record QueuedJobSettings(
     int ThrottleSeconds,
     string? YtDlpArgs,
     bool EmbedLyrics,
-    string DuplicatePolicy = "download")
+    string DuplicatePolicy = "download",
+    bool NormalizeLoudness = false)
 {
     public static QueuedJobSettings From(AppSettings settings) => new(
         settings.Format,
@@ -27,7 +28,8 @@ public sealed record QueuedJobSettings(
         settings.ThrottleSeconds,
         settings.YtDlpArgs,
         settings.EmbedLyrics,
-        settings.DuplicatePolicy);
+        settings.DuplicatePolicy,
+        settings.NormalizeLoudness);
 }
 
 /// <summary>
