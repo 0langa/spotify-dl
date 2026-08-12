@@ -39,6 +39,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing, loudness normalization to -14 LUFS, and advanced yt-dlp argument passthrough
 - Job library with restart-safe resume, per-source progress history, per-job queue report, and one-click playlist Sync that downloads only new or unfinished tracks
+- Library health check that compares saved jobs against the files on disk, relocates files that were moved under the output folder, and reopens tracks whose file is gone so they can be downloaded again
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags, cover art, and optional embedded lyrics
 - Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
 - Optional .m3u8 playlist export preserving track order and merging with earlier runs of the same source, plus Open folder shortcut
@@ -82,6 +83,8 @@ Minimal JSON:
 - Queued jobs restored after a restart are resolved again before they run, so a source that has become unavailable is reported and the rest of the queue continues.
 - Cross-job duplicate handling matches completed library tracks by Spotify track id or URL and only reuses a file already in the requested output format. Imported manifests without a Spotify URL therefore match only within their own source.
 - Hard-linked duplicates need the source file and the output folder on one drive; otherwise the file is copied instead. The skip policy leaves the file where it is, so the playlist file references it by absolute path.
+- The library health check looks for a moved file by name under the job's output folder only, and takes the first match. A file renamed by another tool, or moved outside that folder, is reported as missing rather than relocated.
+- Reopening missing tracks changes only the library entry; nothing is deleted and nothing is downloaded until the job is opened or synced.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
 - Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.
 - In-app updates replace the running executable in its current folder, so a copy in a write-protected location (for example Program Files) must be updated manually from the release page.
@@ -90,7 +93,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.4.0
+./scripts/build-release.ps1 -Version 2.5.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1

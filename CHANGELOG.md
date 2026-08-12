@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 2.5.0 - 2026-08-12
+
+### Added
+
+- Library health check. Check files compares one saved job against the disk and reports how many files are present, missing, empty, or moved; Check all does the same for every saved job at once.
+- Files that were moved or renamed under the job's output folder are found by name and the library is pointed at their new location, so they are not downloaded a second time.
+- Tracks whose file is gone or empty can be marked unfinished again, which puts them back into Open, Sync, and Resume instead of being skipped forever.
+- After reopening tracks the job can be opened straight away with exactly those tracks selected.
+
+### Fixed
+
+- Three 2.3.0 entries in this changelog were listed under Changed instead of Added.
+
 ## 2.4.0 - 2026-08-12
 
 ### Added
@@ -19,14 +32,13 @@
 
 - Optional official Spotify Web API resolution. Supply your own client ID and secret under Settings to resolve playlists, albums, and tracks through the official API when the zero-setup public resolver breaks after a platform change.
 - Credentials are stored in Windows Credential Manager for the signed-in Windows account. Settings keeps only the on/off flag, and the backend receives the pair per request without storing, logging, or echoing it. Rejected credentials report what to check instead of the provider's raw message, which can quote the secret.
+- Optional loudness normalization to the EBU R128 streaming target (-14 LUFS), applied while converting.
+- Cover art column in the track list.
+- Drag and drop a Spotify link or a CSV/JSON manifest onto the window to load it.
 
 ### Changed
 
 - Switching credentials on or off replaces the running resolver in place, so the change takes effect on the next resolve without restarting the app.
-
-- Optional loudness normalization to the EBU R128 streaming target (-14 LUFS), applied while converting.
-- Cover art column in the track list.
-- Drag and drop a Spotify link or a CSV/JSON manifest onto the window to load it.
 
 ### Fixed
 
