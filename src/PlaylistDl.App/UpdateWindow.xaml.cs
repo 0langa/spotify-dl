@@ -24,12 +24,13 @@ public partial class UpdateWindow : Window
         _update = update;
         _installer = installer ?? new UpdateInstaller();
         _currentExecutable = currentExecutable;
+        // The tag comes from the release feed, so it never becomes a path of its own.
+        var folder = string.Concat(update.Tag.Split(Path.GetInvalidFileNameChars()));
         _downloadDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PlaylistDL",
             "updates",
-            // The tag comes from the release feed, so it never becomes a path of its own.
-            string.Concat(update.Tag.Split(Path.GetInvalidFileNameChars())));
+            folder);
 
         HeadlineText.Text = $"Playlist DL {update.Tag} is available";
         DetailText.Text =
