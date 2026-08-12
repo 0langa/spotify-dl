@@ -42,6 +42,10 @@ SUPPORTED_FORMATS = ("mp3", "m4a", "opus", "flac", "wav", "ogg")
 # What to do with a track an earlier job already downloaded somewhere else.
 DUPLICATE_POLICIES = ("download", "skip", "copy", "hardlink")
 
+# EBU R128 target used by most streaming services. Normalizing always re-encodes, so
+# stream-copy formats lose their copy shortcut while it is on.
+LOUDNESS_FILTER = "-af loudnorm=I=-14:TP=-1.5:LRA=11"
+
 NAMING_PRESETS = {
     "position_artist_title": "{list-position} - {artist} - {title}.{output-ext}",
     "artist_title": "{artist} - {title}.{output-ext}",
@@ -716,6 +720,36 @@ def build_output_paths(
     return root, str(root / NAMING_PRESETS[naming_preset])
 
 
+_AUTH_FAILURE_MARKERS = (
+    "invalid_client",
+    "invalid client",
+    "unauthorized",
+    "http status: 401",
+    "http status: 403",
+    "oauth",
+    "access token",
+)
+
+
+def is_spotify_auth_failure(error_text: str | None) -> bool:
+    """True when a provider error is about credentials rather than the source."""
+    lowered = (error_text or "").lower()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
+
+def _verify_official_credentials() -> None:
+    """Force the token request the official client would otherwise defer.
+
+    spotDL builds the official client without contacting Spotify, so a wrong client id
+    or secret would only surface later, in the middle of a resolve.
+    """
+    client = SpotifyClient._instance  # noqa: SLF001 - the client spotDL just built
+    manager = getattr(getattr(client, "auth_manager", None), "get_access_token", None)
+    if manager is None:
+        return
+    manager(check_cache=False)
+
+
 def classify_spotify_url(url: str) -> str:
     """Return source type for an open.spotify.com URL, or raise ValueError."""
     parsed = urlparse(url)
@@ -737,6 +771,7 @@ class Engine:
     def __init__(self, emit: EventSink) -> None:
         self._emit = emit
         self._spotify_initialized = False
+        self._spotify_credentials: tuple[str, str] | None = None
         self._songs: dict[str, list[Song]] = {}
         self._names: dict[str, str] = {}
         self._cancel = threading.Event()
@@ -759,21 +794,79 @@ class Engine:
             if playlist_id in self._names:
                 self._names[playlist_id] = self._names.pop(playlist_id)
 
-    def _ensure_spotify(self) -> None:
-        if self._spotify_initialized:
-            return
-        SpotifyClient.init(
-            client_id="",
-            client_secret="",
-            no_cache=True,
-            use_official_api=False,
-        )
-        self._spotify_initialized = True
+    def _ensure_spotify(self, credentials: tuple[str, str] | None = None) -> None:
+        """Initialize the Spotify client, switching resolvers when credentials change.
 
-    def resolve(self, url: str) -> PlaylistDto:
+        Without credentials the zero-setup unofficial resolver is used. Supplying an
+        official client id and secret switches to the Spotify Web API, which stays
+        available when the unofficial path breaks after a platform change. A failed
+        switch restores the client that was working before it.
+        """
+        if self._spotify_initialized and credentials == self._spotify_credentials:
+            return
+
+        # spotDL keeps one client per process and refuses a second init, so the running
+        # one is set aside and put back if the new one cannot be built.
+        previous_instance = SpotifyClient._instance  # noqa: SLF001 - singleton swap
+        previous_credentials = self._spotify_credentials
+        previous_initialized = self._spotify_initialized
+        SpotifyClient._instance = None  # noqa: SLF001 - the only way to switch resolvers
+        try:
+            if credentials is None:
+                SpotifyClient.init(
+                    client_id="",
+                    client_secret="",
+                    no_cache=True,
+                    use_official_api=False,
+                )
+            else:
+                client_id, client_secret = credentials
+                SpotifyClient.init(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    no_cache=True,
+                    use_official_api=True,
+                )
+                # Building the official client performs no request, so the credentials
+                # are proven here instead of failing later inside a resolve.
+                _verify_official_credentials()
+        except Exception:  # noqa: BLE001 - any provider failure is reported the same way
+            # The provider message can quote the credentials, so it is never logged or
+            # forwarded; only the fact of the rejection is.
+            logger.error("Spotify client initialization failed")
+            SpotifyClient._instance = previous_instance  # noqa: SLF001 - restore
+            self._spotify_credentials = previous_credentials
+            self._spotify_initialized = previous_initialized
+            if credentials is None:
+                raise ValueError(
+                    "The public Spotify resolver could not be started. "
+                    "Check the network, then try again."
+                ) from None
+            raise ValueError(
+                "Spotify rejected the client ID and secret from Settings. "
+                "Check them in the Spotify developer dashboard, or turn the "
+                "official API off to use the public resolver."
+            ) from None
+
+        self._spotify_initialized = True
+        self._spotify_credentials = credentials
+
+    def resolve(self, url: str, credentials: tuple[str, str] | None = None) -> PlaylistDto:
         source_type = classify_spotify_url(url)
-        self._ensure_spotify()
-        name, description, owner, cover_url, songs = self._fetch_source(source_type, url)
+        self._ensure_spotify(credentials)
+        try:
+            name, description, owner, cover_url, songs = self._fetch_source(source_type, url)
+        except Exception as exc:
+            # A credential failure raised here would otherwise reach the UI, the queue
+            # report, and the run log as the provider's raw OAuth string.
+            if credentials is not None and is_spotify_auth_failure(str(exc)):
+                logger.error("Official Spotify credentials were rejected during resolve")
+                raise ValueError(
+                    "Spotify rejected the client ID and secret from Settings. "
+                    "Check them in the Spotify developer dashboard, or turn the "
+                    "official API off to use the public resolver."
+                ) from None
+            raise
         playlist_id = uuid.uuid4().hex
         self._remember_source(playlist_id, name, songs)
         tracks = [self._track_dto(song, index + 1) for index, song in enumerate(songs)]
@@ -991,6 +1084,7 @@ class Engine:
         retries: int = 1,
         ytdlp_args: str | None = None,
         embed_lyrics: bool = False,
+        normalize_loudness: bool = False,
         duplicate_policy: str = "download",
         existing_files: dict[str, str] | None = None,
     ) -> None:
@@ -1053,6 +1147,7 @@ class Engine:
             "simple_tui": True,
             "cookie_file": cookie_file,
             "yt_dlp_args": (ytdlp_args or "").strip() or None,
+            "ffmpeg_args": LOUDNESS_FILTER if normalize_loudness else None,
             "ffmpeg": os.environ.get("PLAYLISTDL_FFMPEG", "ffmpeg"),
         }
         downloader = _create_downloader(settings)

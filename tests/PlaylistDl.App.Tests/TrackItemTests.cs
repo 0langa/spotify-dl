@@ -42,4 +42,15 @@ public sealed class TrackItemTests
 
         Assert.Equal("Manual", track.SourceLabel);
     }
+
+    [Theory]
+    [InlineData(0, "0:00")]
+    [InlineData(59, "0:59")]
+    [InlineData(185, "3:05")]
+    [InlineData(3600, "1:00:00")]
+    [InlineData(4205, "1:10:05")]
+    public void DurationTextKeepsWholeHours(int seconds, string expected)
+    {
+        Assert.Equal(expected, new TrackItem { DurationSeconds = seconds }.DurationText);
+    }
 }

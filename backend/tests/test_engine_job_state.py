@@ -374,3 +374,29 @@ def test_a_downloader_failure_unrelated_to_the_scan_still_stops_the_job(
 
     with pytest.raises(Exception, match="ffmpeg is not installed"):
         engine.download("job", job_env["out"])
+
+
+def test_loudness_normalization_is_off_unless_requested(job_env: dict[str, Any]) -> None:
+    engine: Engine = job_env["engine"]
+    engine._remember_source("job", "My Mix", [_fake_song("One", 1)])
+    _FakeDownloader.script = {"id-1": [("/out/one.mp3", None)]}
+
+    engine.download("job", job_env["out"])
+
+    assert _FakeDownloader.last_instance is not None
+    assert _FakeDownloader.last_instance.settings["ffmpeg_args"] is None
+
+
+def test_loudness_normalization_passes_the_r128_filter_to_the_converter(
+    job_env: dict[str, Any],
+) -> None:
+    engine: Engine = job_env["engine"]
+    engine._remember_source("job", "My Mix", [_fake_song("One", 1)])
+    _FakeDownloader.script = {"id-1": [("/out/one.mp3", None)]}
+
+    engine.download("job", job_env["out"], normalize_loudness=True)
+
+    assert _FakeDownloader.last_instance is not None
+    arguments = _FakeDownloader.last_instance.settings["ffmpeg_args"]
+    assert "loudnorm" in arguments
+    assert "I=-14" in arguments
