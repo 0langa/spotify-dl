@@ -359,7 +359,7 @@ public sealed class LibraryHealthTests : IDisposable
             Complete("a", MusicPath("song.mp3")),
             Complete("gone", MusicPath("gone.mp3")));
         Store.Save(job);
-        var scanner = new LibraryHealthScanner(Store, _ => ThrowsPartWayThrough());
+        var scanner = new LibraryHealthScanner(Store, _ => PartialWalk());
 
         var report = scanner.Scan(job);
 
@@ -373,11 +373,8 @@ public sealed class LibraryHealthTests : IDisposable
         Assert.All(Store.Load(job.SourceUrl)!.Tracks, track => Assert.True(track.IsComplete));
     }
 
-    private static IEnumerable<string> ThrowsPartWayThrough()
-    {
-        yield return "first.mp3";
-        throw new UnauthorizedAccessException("subfolder denied");
-    }
+    private static LibraryHealthScanner.FolderWalk PartialWalk() =>
+        new(["first.mp3"], Complete: false);
 
     [Fact]
     public void ASubfolderRemovedInsideAReadableRootIsRepairableRatherThanUnreachable()
@@ -521,19 +518,16 @@ public sealed class LibraryHealthTests : IDisposable
         File.WriteAllText(Path.Combine(target, "song.mp3"), "audio");
         Directory.CreateDirectory(MusicDirectory);
         var link = MusicPath("linked");
-        if (!TryLink(link, target))
-        {
-            // Creating a link needs a privilege this machine does not grant; the behavior
-            // under test cannot be produced here.
-            return;
-        }
-
+        Assert.True(TryLink(link, target), "no symlink or junction could be created");
         var job = Job(Complete("a", MusicPath("song.mp3")));
 
         var report = Scanner.Scan(job);
 
         Assert.Equal(0, report.Moved);
         Assert.Equal(TrackFileState.Missing, report.Tracks.Single().State);
+        // The part of the tree behind the link was not read, so nothing may be reopened.
+        Assert.False(report.ScanComplete);
+        Assert.False(report.CanReopenMissing);
         Assert.True(File.Exists(Path.Combine(link, "song.mp3")));
     }
 
@@ -584,6 +578,116 @@ public sealed class LibraryHealthTests : IDisposable
 
         Assert.Equal(1, Scanner.ForgetMissing(Scanner.Scan(job)));
         Assert.False(Store.Load(job.SourceUrl)!.Tracks.Single().IsComplete);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Music", @"C:\Music\a.mp3", true)]
+    [InlineData(@"C:\Music\", @"C:\Music\Album\a.mp3", true)]
+    [InlineData(@"C:\Music", @"C:\Music2\a.mp3", false)]
+    [InlineData(@"C:\", @"C:\Music\a.mp3", true)]
+    [InlineData(@"C:\", @"D:\Music\a.mp3", false)]
+    [InlineData(null, @"C:\Music\a.mp3", false)]
+    public void APathIsUnderAFolderIncludingADriveRoot(string? folder, string path, bool expected)
+    {
+        // A drive root keeps its trailing separator, so the prefix test has to allow for it
+        // or every job whose output folder is a drive root is frozen.
+        Assert.Equal(expected, LibraryHealthScanner.IsUnder(path, folder));
+    }
+
+    [Fact]
+    public void AMovedOutputFolderIsFoundAgainAndTheJobFollowsIt()
+    {
+        // The whole music folder was moved: from the recorded path nothing can be found.
+        var gone = Path.Combine(_root, "old-music");
+        var moved = Path.Combine(_root, "new-music");
+        Directory.CreateDirectory(Path.Combine(moved, "Album"));
+        File.WriteAllText(Path.Combine(moved, "Album", "song.mp3"), "audio");
+        var job = new SavedJob
+        {
+            SourceUrl = "https://open.spotify.com/playlist/one",
+            SourceName = "My Mix",
+            OutputDirectory = gone,
+            Tracks = [Complete("a", Path.Combine(gone, "Album", "song.mp3"))],
+        };
+        Store.Save(job);
+
+        var blind = Scanner.Scan(job);
+        Assert.Equal(1, blind.Unreachable);
+        Assert.False(blind.RootAvailable);
+
+        // Pointed at the folder the user found, the same check repairs the job.
+        var report = Scanner.Scan(job, moved);
+
+        Assert.Equal(1, report.Moved);
+        Assert.Equal(1, Scanner.Relocate(report));
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.Equal(Path.Combine(moved, "Album", "song.mp3"), reloaded.Tracks.Single().OutputPath);
+        // The job also has to point at the new folder, or the next download writes nowhere.
+        Assert.Equal(moved, reloaded.OutputDirectory);
+    }
+
+    [Fact]
+    public void AnAvailableOutputFolderIsNotRewrittenByARelocation()
+    {
+        var moved = WriteFile(Path.Combine("Moved", "song.mp3"));
+        var job = Job(Complete("a", MusicPath("song.mp3")));
+        Store.Save(job);
+
+        Assert.Equal(1, Scanner.Relocate(Scanner.Scan(job)));
+
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.Equal(MusicDirectory, reloaded.OutputDirectory);
+        Assert.Equal(moved, reloaded.Tracks.Single().OutputPath);
+    }
+
+    [Fact]
+    public void AFileOutsideAnAvailableRootIsNotReopenedByTheReProbe()
+    {
+        // Recorded under the "skip" duplicate policy: the file lives in another job's
+        // folder, which is gone. The scan calls that unreachable and the repair must agree.
+        var elsewhere = Path.Combine(_root, "other-job");
+        var job = Job(
+            Complete("reused", Path.Combine(elsewhere, "song.mp3")),
+            Complete("gone", MusicPath("gone.mp3")));
+        Store.Save(job);
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(1, report.Unreachable);
+        Assert.Equal(1, Scanner.ForgetMissing(report));
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.True(reloaded.Tracks.Single(track => track.Id == "reused").IsComplete);
+        Assert.False(reloaded.Tracks.Single(track => track.Id == "gone").IsComplete);
+    }
+
+    [Fact]
+    public void CountsStayVisibleWhenSomeFilesAreInAnUnavailableFolder()
+    {
+        var offline = Path.Combine(_root, "offline");
+        var job = new SavedJob
+        {
+            SourceUrl = "https://open.spotify.com/playlist/one",
+            SourceName = "My Mix",
+            OutputDirectory = offline,
+            Tracks =
+            [
+                Complete("away", Path.Combine(offline, "a.mp3")),
+                Complete("nopath", null),
+            ],
+        };
+
+        var summary = Scanner.Scan(job).Summary;
+
+        Assert.Contains("1 missing or empty", summary);
+        Assert.Contains("1 in a folder that is not available", summary);
+    }
+
+    [Fact]
+    public void OneFileReadsAsOneFile()
+    {
+        var job = Job(Complete("a", WriteFile("a.mp3")));
+
+        Assert.Equal("1 file present", Scanner.Scan(job).Summary);
     }
 
     [Fact]

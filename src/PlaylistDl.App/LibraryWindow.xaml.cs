@@ -1,5 +1,7 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
+using Microsoft.Win32;
 using PlaylistDl.App.Models;
 using PlaylistDl.App.Services;
 
@@ -117,6 +119,12 @@ public partial class LibraryWindow : Window
                 return;
             }
 
+            report = await OfferToLocateFolderAsync(scanner, entry, report);
+            if (_closed)
+            {
+                return;
+            }
+
             HealthText.Text = $"{entry.Name}: {report.Summary}";
             if (!report.IsHealthy)
             {
@@ -142,7 +150,9 @@ public partial class LibraryWindow : Window
                 return;
             }
 
-            var damaged = reports.Where(report => !report.IsHealthy).ToList();
+            var damaged = reports
+                .Where(report => !report.IsHealthy || !report.ScanComplete)
+                .ToList();
             HealthText.Text = damaged.Count == 0
                 ? $"All {reports.Count} saved jobs match what is on disk."
                 : "Needs attention — select a job and press Check files to repair it:" +
@@ -213,6 +223,58 @@ public partial class LibraryWindow : Window
         }
     }
 
+    /// <summary>
+    /// Offers to search a folder the user picks when the job's own output folder is gone.
+    /// </summary>
+    /// <remarks>
+    /// Moving the music folder is the most common way a library goes stale, and from the
+    /// old path nothing can be found: every file reads as unreachable and no repair is
+    /// possible until the check is pointed at the new folder.
+    /// </remarks>
+    private async Task<LibraryHealthReport> OfferToLocateFolderAsync(
+        LibraryHealthScanner scanner, LibraryEntry entry, LibraryHealthReport report)
+    {
+        if (report.RootAvailable || report.Unreachable == 0)
+        {
+            return report;
+        }
+
+        HealthText.Text = $"{entry.Name}: {report.Summary}";
+        var locate = MessageBox.Show(
+            this,
+            $"{report.Job.OutputDirectory} is not available, so {report.Unreachable} files " +
+            "cannot be checked. Look for them in another folder?",
+            "Folder not available",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (locate != MessageBoxResult.Yes || _closed)
+        {
+            return report;
+        }
+
+        var dialog = new OpenFolderDialog
+        {
+            Title = $"Where are the files of {entry.Name} now?",
+            Multiselect = false,
+        };
+        try
+        {
+            if (dialog.ShowDialog(this) != true)
+            {
+                return report;
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or COMException)
+        {
+            HealthText.Text = "The folder picker could not open.";
+            return report;
+        }
+
+        var chosen = dialog.FolderName;
+        HealthText.Text = $"Checking {chosen}…";
+        return await Task.Run(() => scanner.Scan(entry.Job, chosen));
+    }
+
     private async Task OfferRepairAsync(
         LibraryHealthScanner scanner, LibraryEntry entry, LibraryHealthReport report)
     {
@@ -220,9 +282,10 @@ public partial class LibraryWindow : Window
         {
             var relocate = MessageBox.Show(
                 this,
-                $"{report.Moved} files were found somewhere else under " +
-                $"{report.Job.OutputDirectory}. Point the library at them? Only files whose " +
-                "name occurs once and that no other saved job uses are matched.",
+                $"{LibraryHealthReport.Files(report.Moved)} were found somewhere else under " +
+                $"{report.Root ?? report.Job.OutputDirectory}. Point the library at them? " +
+                "Only files whose name occurs once and that no other saved job uses are " +
+                "matched.",
                 "Files moved",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question);
@@ -231,7 +294,7 @@ public partial class LibraryWindow : Window
                 var moved = await Repair(
                     report.Job.SourceUrl,
                     () => scanner.Relocate(report),
-                    count => $"{entry.Name}: {count} files relocated.");
+                    count => $"{entry.Name}: {LibraryHealthReport.Files(count)} relocated.");
                 if (_closed || moved is null)
                 {
                     return;
@@ -256,7 +319,8 @@ public partial class LibraryWindow : Window
 
         var forget = MessageBox.Show(
             this,
-            $"{report.Missing} files are missing or empty. Mark those tracks unfinished so " +
+            $"{LibraryHealthReport.Files(report.Missing)} are missing or empty. Mark those " +
+            "tracks unfinished so " +
             "they can be downloaded again? Empty leftover files are deleted and the saved " +
             "job, the resume point, and queued jobs for it are updated; no other file on " +
             "disk is touched and nothing is downloaded yet.",
@@ -273,7 +337,7 @@ public partial class LibraryWindow : Window
             () => scanner.ForgetMissing(report),
             count => count == 0
                 ? $"{entry.Name}: nothing was reopened — the saved job changed while the check ran."
-                : $"{entry.Name}: {count} tracks reopened.");
+                : $"{entry.Name}: {LibraryHealthReport.Tracked(count)} reopened.");
         if (_closed || reopened is null or 0)
         {
             return;
@@ -281,15 +345,27 @@ public partial class LibraryWindow : Window
 
         var open = MessageBox.Show(
             this,
-            $"Open \"{entry.Name}\" now so those {reopened} tracks can be downloaded again?",
+            $"Open \"{entry.Name}\" now so those {LibraryHealthReport.Tracked(reopened.Value)} " +
+            "can be downloaded again?",
             "Download again",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
-        if (open == MessageBoxResult.Yes && !_closed)
+        if (open != MessageBoxResult.Yes || _closed)
         {
-            SelectedJob = _library.Load(report.Job.SourceUrl) ?? report.Job;
+            return;
+        }
+
+        // Never the pre-repair snapshot the scan started from: restoring that would write
+        // the reopened tracks back as complete.
+        if (_library.Load(report.Job.SourceUrl) is { } repaired)
+        {
+            SelectedJob = repaired;
             SyncRequested = false;
             DialogResult = true;
+        }
+        else
+        {
+            HealthText.Text = $"{entry.Name}: the repaired job could not be read back.";
         }
     }
 

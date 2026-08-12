@@ -201,13 +201,6 @@ public sealed class DownloadQueue
             }
 
             var merged = MergeRepair(job.Snapshot, repaired);
-            if (merged.Tracks.Count(track => track.IsSelected && !track.IsComplete) == 0)
-            {
-                // A queued job with nothing left to download cannot run and is dropped on
-                // the next start, so the job the user queued is kept as it was.
-                continue;
-            }
-
             _jobs[index] = job with
             {
                 Snapshot = merged,
@@ -226,7 +219,14 @@ public sealed class DownloadQueue
         return refreshed;
     }
 
-    /// <summary>Repaired completion state on top of the queued job's own selection.</summary>
+    /// <summary>
+    /// Repaired completion state on top of the queued job's own selection.
+    /// </summary>
+    /// <remarks>
+    /// A track the repair reopened was skipped by this job as already downloaded, so it is
+    /// taken back into the job; every other selection stays exactly as it was queued, and a
+    /// track this job never had is not added by the repair.
+    /// </remarks>
     private static SavedJob MergeRepair(SavedJob queued, SavedJob repaired)
     {
         var queuedTracks = new Dictionary<string, SavedTrack>(StringComparer.Ordinal);
@@ -253,10 +253,8 @@ public sealed class DownloadQueue
             {
                 queuedTracks.TryGetValue(track.Id, out queuedTrack);
             }
-            if (queuedTrack is not null)
-            {
-                track.IsSelected = queuedTrack.IsSelected;
-            }
+            track.IsSelected = queuedTrack is not null &&
+                (queuedTrack.IsSelected || (queuedTrack.IsComplete && !track.IsComplete));
         }
 
         // The queued job keeps its own output folder; only the track state is taken over.
