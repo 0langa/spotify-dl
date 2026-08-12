@@ -51,11 +51,31 @@ Write-Host "Release checksums verified. Authenticode status: $($signature.Status
 
 $defender = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
 if (Test-Path -LiteralPath $defender) {
-    & $defender -Scan -ScanType 3 -File $executable -DisableRemediation
-    if ($LASTEXITCODE -ne 0) {
-        throw "Microsoft Defender scan failed or detected a threat (exit $LASTEXITCODE)."
+    $scan = & $defender -Scan -ScanType 3 -File $executable -DisableRemediation 2>&1
+    $scanExit = $LASTEXITCODE
+    $scanOutput = ($scan | Out-String).Trim()
+    if ($scanOutput.Length -gt 0) {
+        Write-Host $scanOutput
     }
-    Write-Host 'Microsoft Defender scan passed.'
+
+    # The antimalware service is turned off on hosted build agents, and MpCmdRun then
+    # reports an HRESULT instead of a verdict. That is a missing scan, not a detection,
+    # and it must not be reported as one.
+    $engineUnavailable = $scanOutput -match 'CmdTool: Failed with hr' -or
+        $scanOutput -match 'ScanFile failed with hr' -or
+        $scanOutput -match '0x800106ba'
+    if ($scanExit -ne 0 -and -not $engineUnavailable) {
+        throw "Microsoft Defender detected a threat or failed to scan (exit $scanExit)."
+    }
+
+    if ($engineUnavailable) {
+        Write-Warning (
+            'Microsoft Defender did not run on this machine; ' +
+            'checksum/signature validation still passed.')
+    }
+    else {
+        Write-Host 'Microsoft Defender scan passed.'
+    }
 }
 else {
     Write-Warning 'Microsoft Defender CLI unavailable; checksum/signature validation still passed.'
