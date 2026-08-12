@@ -176,12 +176,16 @@ public sealed class DownloadQueue
     }
 
     /// <summary>
-    /// Replaces the durable snapshot of every job whose source <paramref name="lookup"/>
-    /// returns a newer entry for, e.g. after the library repaired it.
+    /// Takes the repaired completion state of every job whose source
+    /// <paramref name="lookup"/> returns a newer entry for, e.g. after the library
+    /// repaired it.
     /// </summary>
     /// <remarks>
-    /// The live session is dropped with it, because the queued selection is derived from
-    /// the snapshot when the job runs.
+    /// Only what the repair establishes is taken over: which tracks are finished and where
+    /// their files are. The selection stays the one frozen at enqueue time, because the
+    /// library entry follows the main window's grid and would silently change what the
+    /// queued job downloads. The live session is dropped, since the run rebuilds its track
+    /// list from the snapshot.
     /// </remarks>
     /// <returns>How many queued jobs were refreshed.</returns>
     public int RefreshSnapshots(Func<string, SavedJob?> lookup)
@@ -190,14 +194,23 @@ public sealed class DownloadQueue
         var refreshed = 0;
         for (var index = 0; index < _jobs.Count; index++)
         {
-            if (lookup(_jobs[index].SourceUrl) is not { } snapshot)
+            var job = _jobs[index];
+            if (lookup(job.SourceUrl) is not { } repaired)
             {
                 continue;
             }
 
-            _jobs[index] = _jobs[index] with
+            var merged = MergeRepair(job.Snapshot, repaired);
+            if (merged.Tracks.Count(track => track.IsSelected && !track.IsComplete) == 0)
             {
-                Snapshot = snapshot,
+                // A queued job with nothing left to download cannot run and is dropped on
+                // the next start, so the job the user queued is kept as it was.
+                continue;
+            }
+
+            _jobs[index] = job with
+            {
+                Snapshot = merged,
                 PlaylistId = null,
                 AllTracks = [],
                 Tracks = [],
@@ -211,6 +224,44 @@ public sealed class DownloadQueue
         }
 
         return refreshed;
+    }
+
+    /// <summary>Repaired completion state on top of the queued job's own selection.</summary>
+    private static SavedJob MergeRepair(SavedJob queued, SavedJob repaired)
+    {
+        var queuedTracks = new Dictionary<string, SavedTrack>(StringComparer.Ordinal);
+        foreach (var track in queued.Tracks)
+        {
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                queuedTracks.TryAdd(track.SpotifyUrl, track);
+            }
+            if (!string.IsNullOrEmpty(track.Id))
+            {
+                queuedTracks.TryAdd(track.Id, track);
+            }
+        }
+
+        foreach (var track in repaired.Tracks)
+        {
+            SavedTrack? queuedTrack = null;
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                queuedTracks.TryGetValue(track.SpotifyUrl, out queuedTrack);
+            }
+            if (queuedTrack is null && !string.IsNullOrEmpty(track.Id))
+            {
+                queuedTracks.TryGetValue(track.Id, out queuedTrack);
+            }
+            if (queuedTrack is not null)
+            {
+                track.IsSelected = queuedTrack.IsSelected;
+            }
+        }
+
+        // The queued job keeps its own output folder; only the track state is taken over.
+        repaired.OutputDirectory = queued.OutputDirectory;
+        return repaired;
     }
 
     /// <summary>Moves one job by <paramref name="offset"/> places; returns its new index.</summary>

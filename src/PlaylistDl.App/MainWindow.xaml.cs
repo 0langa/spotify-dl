@@ -1605,9 +1605,18 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (repairedSource is not null && _library.Load(repairedSource) is { } repaired)
+        if (repairedSource is null)
+        {
+            return;
+        }
+
+        if (_library.Load(repairedSource) is { } repaired)
         {
             await RestoreJobAsync(repaired, sync: false);
+        }
+        else
+        {
+            StatusText.Text = "The repaired job could not be read — open it from the library";
         }
     }
 

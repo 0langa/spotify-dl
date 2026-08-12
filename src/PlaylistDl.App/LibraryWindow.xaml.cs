@@ -33,6 +33,8 @@ public partial class LibraryWindow : Window
     private readonly HashSet<string> _repaired = new(StringComparer.OrdinalIgnoreCase);
     private bool _checking;
     private bool _closed;
+    private bool _repairing;
+    private bool _closeRequested;
 
     public LibraryWindow(LibraryStore library)
     {
@@ -48,6 +50,21 @@ public partial class LibraryWindow : Window
 
     /// <summary>Sources whose library entry this window changed, for the caller to refresh.</summary>
     public IReadOnlyCollection<string> RepairedSources => _repaired;
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        // The caller reads RepairedSources as soon as this window closes and then reloads
+        // the library, so a repair that is still being written has to land first.
+        if (_repairing)
+        {
+            e.Cancel = true;
+            _closeRequested = true;
+            HealthText.Text = "Finishing the repair…";
+            return;
+        }
+
+        base.OnClosing(e);
+    }
 
     protected override void OnClosed(EventArgs e)
     {
@@ -115,6 +132,13 @@ public partial class LibraryWindow : Window
             var reports = await Task.Run(scanner.ScanAll);
             if (_closed)
             {
+                return;
+            }
+
+            if (reports.Count == 0)
+            {
+                // An unreadable library reads as an empty one, so this cannot claim health.
+                HealthText.Text = "No saved jobs were found to check.";
                 return;
             }
 
@@ -233,8 +257,9 @@ public partial class LibraryWindow : Window
         var forget = MessageBox.Show(
             this,
             $"{report.Missing} files are missing or empty. Mark those tracks unfinished so " +
-            "they can be downloaded again? Empty leftover files are deleted; nothing else " +
-            "on disk is touched and nothing is downloaded yet.",
+            "they can be downloaded again? Empty leftover files are deleted and the saved " +
+            "job, the resume point, and queued jobs for it are updated; no other file on " +
+            "disk is touched and nothing is downloaded yet.",
             "Files missing",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
@@ -275,13 +300,16 @@ public partial class LibraryWindow : Window
     private async Task<int?> Repair(
         string sourceUrl, Func<int> repair, Func<int, string> describe)
     {
-        // Recorded before the write, not after: the window can be closed while the repair
-        // is in flight, and the caller reads RepairedSources as soon as it returns. A
-        // repair that then changes nothing only costs the caller one reload.
-        _repaired.Add(sourceUrl);
+        _repairing = true;
         try
         {
             var count = await Task.Run(repair);
+            if (count > 0)
+            {
+                // The main window holds its own copy of this job and would write it back.
+                _repaired.Add(sourceUrl);
+            }
+
             if (!_closed)
             {
                 HealthText.Text = describe(count);
@@ -298,6 +326,14 @@ public partial class LibraryWindow : Window
             }
 
             return null;
+        }
+        finally
+        {
+            _repairing = false;
+            if (_closeRequested)
+            {
+                Close();
+            }
         }
     }
 

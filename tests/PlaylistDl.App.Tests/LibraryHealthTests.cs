@@ -293,6 +293,34 @@ public sealed class LibraryHealthTests : IDisposable
     }
 
     [Fact]
+    public void AGoneReusedFileFromAnotherJobDoesNotFreezeTheRestOfTheJob()
+    {
+        // Duplicate policy "skip" records the other job's path verbatim, so a job can
+        // point outside its own output folder. That folder being deleted for good must
+        // not hide or block the repairs this job's own missing files still need.
+        var otherJob = Path.Combine(_root, "other-job");
+        var job = Job(
+            Complete("reused", Path.Combine(otherJob, "reused.mp3")),
+            Complete("gone", MusicPath("gone.mp3")),
+            Complete("here", WriteFile("here.mp3")));
+        Store.Save(job);
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(1, report.Unreachable);
+        Assert.Equal(1, report.Missing);
+        Assert.Contains("1 missing or empty", report.Summary);
+        Assert.True(report.CanReopenMissing);
+
+        Assert.Equal(1, Scanner.ForgetMissing(report));
+        var saved = Store.Load(job.SourceUrl)!;
+        Assert.False(saved.Tracks.Single(track => track.Id == "gone").IsComplete);
+        // The unreachable path is left alone: nothing proves that file is deleted.
+        Assert.True(saved.Tracks.Single(track => track.Id == "reused").IsComplete);
+        Assert.True(saved.Tracks.Single(track => track.Id == "here").IsComplete);
+    }
+
+    [Fact]
     public void EveryJobIsCheckedAgainstItsOwnOutputFolder()
     {
         var first = Path.Combine(_root, "first");
@@ -408,6 +436,154 @@ public sealed class LibraryHealthTests : IDisposable
 
         Assert.Equal(TrackFileState.Missing, Scanner.Scan(job).Tracks.Single().State);
         Assert.True(File.Exists(other));
+    }
+
+    [Fact]
+    public void AFolderTheUserReorganizedInsideAReadableRootIsActuallyReopened()
+    {
+        // The scan calls this missing rather than unreachable, so the repair has to agree.
+        var job = Job(Complete("gone", MusicPath(Path.Combine("Old album", "song.mp3"))));
+        Store.Save(job);
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(TrackFileState.Missing, report.Tracks.Single().State);
+        Assert.Equal(1, Scanner.ForgetMissing(report));
+        Assert.False(Store.Load(job.SourceUrl)!.Tracks.Single().IsComplete);
+    }
+
+    [Fact]
+    public void CheckAllNeverHandsOneFileToTwoJobs()
+    {
+        var moved = WriteFile(Path.Combine("Moved", "song.mp3"));
+        foreach (var (url, name) in new[]
+                 {
+                     ("https://open.spotify.com/playlist/one", "First"),
+                     ("https://open.spotify.com/album/two", "Second"),
+                 })
+        {
+            Store.Save(new SavedJob
+            {
+                SourceUrl = url,
+                SourceName = name,
+                OutputDirectory = MusicDirectory,
+                Tracks = [Complete(name, MusicPath("song.mp3"))],
+            });
+        }
+
+        var reports = Scanner.ScanAll();
+
+        Assert.Equal(1, reports.Sum(report => report.Moved));
+        Assert.Equal(1, reports.Sum(report => report.Missing));
+        Assert.Single(
+            reports.SelectMany(report => report.Tracks),
+            track => track.FoundPath == moved);
+    }
+
+    [Fact]
+    public void AnAdoptedFileThatDisappearedAfterTheScanIsNotWrittenToTheLibrary()
+    {
+        var moved = WriteFile(Path.Combine("Moved", "song.mp3"));
+        var job = Job(Complete("a", MusicPath("song.mp3")));
+        Store.Save(job);
+        var report = Scanner.Scan(job);
+
+        File.Delete(moved);
+
+        Assert.Equal(0, Scanner.Relocate(report));
+        Assert.Equal(MusicPath("song.mp3"), Store.Load(job.SourceUrl)!.Tracks.Single().OutputPath);
+    }
+
+    [Fact]
+    public void AnEmptyLeftoverIsKeptWhenItsTrackWasNotReopened()
+    {
+        var reopened = MusicPath("gone.mp3");
+        var leftover = WriteFile("empty.mp3", string.Empty);
+        var job = Job(Complete("gone", reopened), Complete("empty", leftover));
+        Store.Save(job);
+        var report = Scanner.Scan(job);
+
+        // The empty track finished again with a different file while the check was open.
+        var meanwhile = Store.Load(job.SourceUrl)!;
+        meanwhile.Tracks.Single(track => track.Id == "empty").OutputPath = WriteFile("fixed.mp3");
+        Store.Save(meanwhile);
+
+        Assert.Equal(1, Scanner.ForgetMissing(report));
+        // Its leftover belongs to a track the repair left alone, so it stays.
+        Assert.True(File.Exists(leftover));
+    }
+
+    [Fact]
+    public void FilesUnderALinkedFolderAreNeverAdopted()
+    {
+        var target = Path.Combine(_root, "outside");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "song.mp3"), "audio");
+        Directory.CreateDirectory(MusicDirectory);
+        var link = MusicPath("linked");
+        if (!TryLink(link, target))
+        {
+            // Creating a link needs a privilege this machine does not grant; the behavior
+            // under test cannot be produced here.
+            return;
+        }
+
+        var job = Job(Complete("a", MusicPath("song.mp3")));
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(0, report.Moved);
+        Assert.Equal(TrackFileState.Missing, report.Tracks.Single().State);
+        Assert.True(File.Exists(Path.Combine(link, "song.mp3")));
+    }
+
+    /// <summary>Links a folder, as a symlink or else as a junction.</summary>
+    private static bool TryLink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                "cmd.exe", ["/c", "mklink", "/J", link, target])
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            });
+            process?.WaitForExit(10_000);
+            return Directory.Exists(link);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or
+            System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public void ATrackWithoutAnIdIsStillMatchedByItsUrlWhenTheRepairIsApplied()
+    {
+        var job = Job();
+        job.Tracks.Add(new SavedTrack
+        {
+            Id = string.Empty,
+            SpotifyUrl = "https://open.spotify.com/track/only-url",
+            IsComplete = true,
+            OutputPath = MusicPath("gone.mp3"),
+        });
+        Store.Save(job);
+
+        Assert.Equal(1, Scanner.ForgetMissing(Scanner.Scan(job)));
+        Assert.False(Store.Load(job.SourceUrl)!.Tracks.Single().IsComplete);
     }
 
     [Fact]

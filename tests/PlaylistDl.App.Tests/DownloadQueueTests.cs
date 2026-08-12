@@ -68,6 +68,63 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void RefreshSnapshotsKeepsTheSelectionTheJobWasQueuedWith()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job(
+            "mix",
+            new TrackItem { Id = "t1", IsSelected = true },
+            new TrackItem { Id = "t2", IsSelected = false }));
+        var url = queue.Items[0].SourceUrl;
+        var repaired = new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "mix",
+            OutputDirectory = @"C:\elsewhere",
+            Tracks =
+            [
+                new SavedTrack { Id = "t1", IsSelected = true, IsComplete = true, OutputPath = @"C:\music\t1.mp3" },
+                new SavedTrack { Id = "t2", IsSelected = true, IsComplete = false },
+                new SavedTrack { Id = "t3", IsSelected = true, IsComplete = false },
+            ],
+        };
+
+        Assert.Equal(1, queue.RefreshSnapshots(source => source == url ? repaired : null));
+
+        var snapshot = queue.Items[0].Snapshot;
+        // The repaired completion state is taken over...
+        Assert.True(snapshot.Tracks.Single(track => track.Id == "t1").IsComplete);
+        // ...but a track the user deselected before queuing stays deselected.
+        Assert.False(snapshot.Tracks.Single(track => track.Id == "t2").IsSelected);
+        // A track the queued snapshot never knew keeps the library's value.
+        Assert.True(snapshot.Tracks.Single(track => track.Id == "t3").IsSelected);
+        // The queued job keeps its own output folder.
+        Assert.Equal(@"C:\music", snapshot.OutputDirectory);
+    }
+
+    [Fact]
+    public void RefreshSnapshotsKeepsAJobThatWouldBeLeftWithNothingToDownload()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("mix", new TrackItem { Id = "t1", IsSelected = true }));
+        var url = queue.Items[0].SourceUrl;
+        var before = queue.Items[0].Snapshot;
+        var repaired = new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "mix",
+            OutputDirectory = @"C:\music",
+            Tracks = [new SavedTrack { Id = "t1", IsSelected = true, IsComplete = true }],
+        };
+
+        Assert.Equal(0, queue.RefreshSnapshots(source => source == url ? repaired : null));
+
+        // Dropping it silently at the next start is worse than an out-of-date snapshot.
+        Assert.Same(before, queue.Items[0].Snapshot);
+        Assert.Equal(1, queue.Items[0].SelectedCount);
+    }
+
+    [Fact]
     public void RefreshSnapshotsLeavesTheQueueAloneWhenNothingWasRepaired()
     {
         var queue = new DownloadQueue();
