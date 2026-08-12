@@ -41,7 +41,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
 - Optional .m3u8 playlist export preserving track order and merging with earlier runs of the same source, plus Open folder shortcut
 - Optional YouTube cookie file for authenticated/Premium formats
-- Update awareness: silent daily startup check plus on-demand check against published GitHub releases
+- Verified in-app update: silent daily check, then download the published executable, verify it against the release SHA256SUMS.txt, and install it with the previous version kept as rollback
 - One downloadable self-contained Windows x64 executable
 
 Session logs live under `%LOCALAPPDATA%\PlaylistDL\logs` and can be opened from **Run log**. Logs retain exact provider failures for 14 days; cookie contents and application secrets are never written by Playlist DL.
@@ -80,12 +80,13 @@ Minimal JSON:
 - Queued jobs restored after a restart are resolved again before they run, so a source that has become unavailable is reported and the rest of the queue continues.
 - Cross-job duplicate handling matches completed library tracks by Spotify track id or URL and only reuses a file already in the requested output format. Imported manifests without a Spotify URL therefore match only within their own source.
 - Hard-linked duplicates need the source file and the output folder on one drive; otherwise the file is copied instead. The skip policy leaves the file where it is, so the playlist file references it by absolute path.
+- In-app updates replace the running executable in its current folder, so a copy in a write-protected location (for example Program Files) must be updated manually from the release page.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.1.0
+./scripts/build-release.ps1 -Version 2.2.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1

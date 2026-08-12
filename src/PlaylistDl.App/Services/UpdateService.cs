@@ -6,7 +6,19 @@ using System.Text.Json.Serialization;
 
 namespace PlaylistDl.App.Services;
 
-public sealed record UpdateResult(Version Version, string Tag, Uri ReleasePage);
+/// <summary>One downloadable file published with a release.</summary>
+public sealed record ReleaseAsset(string Name, Uri Url, long Size);
+
+public sealed record UpdateResult(
+    Version Version,
+    string Tag,
+    Uri ReleasePage,
+    ReleaseAsset? Executable = null,
+    ReleaseAsset? Checksums = null)
+{
+    /// <summary>True when the release ships both the executable and its checksums.</summary>
+    public bool CanInstall => Executable is not null && Checksums is not null;
+}
 
 public sealed class UpdateService
 {
@@ -42,7 +54,38 @@ public sealed class UpdateService
             return null;
         }
 
-        return new UpdateResult(latest, release.TagName, page);
+        return new UpdateResult(
+            latest,
+            release.TagName,
+            page,
+            SelectAsset(release.Assets, "PlaylistDL.exe"),
+            SelectAsset(release.Assets, "SHA256SUMS.txt"));
+    }
+
+    /// <summary>Only an https github.com download URL is ever used for an update.</summary>
+    public static ReleaseAsset? SelectAsset(IReadOnlyList<GitHubAsset>? assets, string name)
+    {
+        foreach (var asset in assets ?? [])
+        {
+            if (!string.Equals(asset.Name, name, StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileName(asset.Name) != asset.Name)
+            {
+                continue;
+            }
+
+            if (!Uri.TryCreate(asset.DownloadUrl, UriKind.Absolute, out var url) ||
+                url.Scheme != Uri.UriSchemeHttps ||
+                !(url.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+                    url.Host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase) ||
+                    url.Host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            return new ReleaseAsset(asset.Name, url, asset.Size);
+        }
+
+        return null;
     }
 
     /// <summary>Only an https github.com release page is ever handed to the shell.</summary>
@@ -85,5 +128,20 @@ public sealed class UpdateService
 
         [JsonPropertyName("html_url")]
         public string HtmlUrl { get; init; } = string.Empty;
+
+        [JsonPropertyName("assets")]
+        public List<GitHubAsset> Assets { get; init; } = [];
+    }
+
+    public sealed class GitHubAsset
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; init; } = string.Empty;
+
+        [JsonPropertyName("browser_download_url")]
+        public string DownloadUrl { get; init; } = string.Empty;
+
+        [JsonPropertyName("size")]
+        public long Size { get; init; }
     }
 }
