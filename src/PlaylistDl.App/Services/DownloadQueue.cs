@@ -15,7 +15,8 @@ public sealed record QueuedJobSettings(
     string? YtDlpArgs,
     bool EmbedLyrics,
     string DuplicatePolicy = "download",
-    bool NormalizeLoudness = false)
+    bool NormalizeLoudness = false,
+    bool VerifyDownloads = true)
 {
     public static QueuedJobSettings From(AppSettings settings) => new(
         settings.Format,
@@ -29,7 +30,8 @@ public sealed record QueuedJobSettings(
         settings.YtDlpArgs,
         settings.EmbedLyrics,
         settings.DuplicatePolicy,
-        settings.NormalizeLoudness);
+        settings.NormalizeLoudness,
+        settings.VerifyDownloads);
 }
 
 /// <summary>

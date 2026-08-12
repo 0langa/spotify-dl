@@ -24,6 +24,9 @@ def job_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     _FakeDownloader.script = {}
     _FakeDownloader.last_instance = None
     _FakeDownloader.batches = []
+    # These fixtures script fake output paths, so the saved-file check is exercised
+    # by the dedicated integrity tests instead.
+    instance._verify_downloads = False
     return {"engine": instance, "events": events, "out": str(tmp_path), "tmp": tmp_path}
 
 

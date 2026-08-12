@@ -804,6 +804,7 @@ public partial class MainWindow : Window
                     ytdlp_args = snapshot.YtDlpArgs,
                     embed_lyrics = snapshot.EmbedLyrics,
                     normalize_loudness = snapshot.NormalizeLoudness,
+                    verify_downloads = snapshot.VerifyDownloads,
                     duplicate_policy = snapshot.DuplicatePolicy,
                     existing_files = existingFiles,
                 });

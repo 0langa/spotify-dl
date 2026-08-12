@@ -34,6 +34,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Per-track and overall progress, bounded parallel downloads, measured throughput/ETA, duplicate scanning, batch cancellation
 - Multi-source download queue with per-job settings snapshots, sequential execution, reordering, and pending jobs that survive a restart
 - Optional cross-job duplicate handling: skip, copy, or hard-link a track an earlier job already downloaded
+- Every saved file is checked before a track counts as done: empty, undecodable, or clearly wrong-length downloads are rejected and recovered from another source
 - Per-track Done/Failed results with selectable exact errors, retained session logs, one-click retry, and automatic backoff retry for transient failures
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing, loudness normalization to -14 LUFS, and advanced yt-dlp argument passthrough
@@ -82,13 +83,14 @@ Minimal JSON:
 - Cross-job duplicate handling matches completed library tracks by Spotify track id or URL and only reuses a file already in the requested output format. Imported manifests without a Spotify URL therefore match only within their own source.
 - Hard-linked duplicates need the source file and the output folder on one drive; otherwise the file is copied instead. The skip policy leaves the file where it is, so the playlist file references it by absolute path.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
+- Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.
 - In-app updates replace the running executable in its current folder, so a copy in a write-protected location (for example Program Files) must be updated manually from the release page.
 - Release executable is unsigned and can trigger Windows SmartScreen unknown-publisher warning.
 
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.3.0
+./scripts/build-release.ps1 -Version 2.4.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
