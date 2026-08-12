@@ -1,0 +1,49 @@
+<Window x:Class="PlaylistDl.App.UpdateWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Update Playlist DL" Height="360" Width="620" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" Background="#111318">
+  <Grid Margin="22">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <TextBlock Grid.Row="0" x:Name="HeadlineText" FontSize="18" FontWeight="SemiBold"
+               Foreground="White" TextWrapping="Wrap" />
+    <TextBlock Grid.Row="1" x:Name="DetailText" Foreground="#AEB6C5" TextWrapping="Wrap"
+               Margin="0,8,0,0" />
+
+    <StackPanel Grid.Row="2" Margin="0,18,0,0">
+      <ProgressBar x:Name="DownloadProgress" Height="8" Maximum="100" />
+      <TextBlock x:Name="StatusText" Foreground="#AEB6C5" Margin="0,8,0,0" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <Border Grid.Row="3" Margin="0,16,0,0" Background="#171A21" BorderBrush="#303642"
+            BorderThickness="1" CornerRadius="6" Padding="12" x:Name="VerificationPanel"
+            Visibility="Collapsed">
+      <StackPanel>
+        <TextBlock Text="Verified against the published SHA256SUMS.txt" Foreground="#9BD3A2"
+                   FontWeight="SemiBold" />
+        <TextBox x:Name="ChecksumText" IsReadOnly="True" Background="Transparent"
+                 BorderThickness="0" Foreground="#AEB6C5" Margin="0,6,0,0"
+                 TextWrapping="Wrap" FontFamily="Consolas" />
+      </StackPanel>
+    </Border>
+
+    <DockPanel Grid.Row="4" Margin="0,18,0,0" LastChildFill="False">
+      <Button DockPanel.Dock="Left" x:Name="ReleasePageButton" Content="Open release page"
+              Width="150" Click="ReleasePageButton_Click" />
+      <Button DockPanel.Dock="Right" x:Name="InstallButton" Content="Install and restart"
+              Width="160" IsEnabled="False" Background="#4F7DFF" Foreground="White"
+              Click="InstallButton_Click" />
+      <Button DockPanel.Dock="Right" x:Name="DownloadButton" Content="Download and verify"
+              Width="160" Margin="0,0,10,0" Click="DownloadButton_Click" />
+      <Button DockPanel.Dock="Right" x:Name="CloseButton" Content="Close" Width="90"
+              Margin="0,0,10,0" IsCancel="True" Click="CloseButton_Click" />
+    </DockPanel>
+  </Grid>
+</Window>

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.2.0 - 2026-08-12
+
+### Added
+
+- Verified in-app update. The Get button now downloads the published executable, checks it against the SHA256SUMS.txt of the same release, shows the verified digest, and installs it only after the checksum matches.
+- The installer never writes over the running binary: the current executable is moved aside as `PlaylistDL.exe.previous`, the verified one takes its place, and the previous file is restored if anything fails. The next start removes it.
+
+### Changed
+
+- Helper sets extracted by earlier app versions under the local tools folder are removed once the current version's set is verified, and finished update downloads are cleared at startup.
+- An update cannot be installed while a download or queue run is active.
+
 ## 2.1.0 - 2026-08-12
 
 ### Added

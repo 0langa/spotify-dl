@@ -64,6 +64,7 @@ public static class ToolBundleService
                 throw new InvalidDataException("Embedded tool bundle failed integrity validation.");
             }
 
+            PruneOtherVersions(Path.GetDirectoryName(target)!, version);
             return backend;
         }
     }
@@ -98,6 +99,39 @@ public static class ToolBundleService
             exception is JsonException or InvalidDataException)
         {
             return null;
+        }
+    }
+
+    /// <summary>Removes helper sets extracted by earlier versions of the app.</summary>
+    private static void PruneOtherVersions(string toolsRoot, string currentVersion)
+    {
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(toolsRoot))
+            {
+                if (string.Equals(
+                    Path.GetFileName(directory),
+                    currentVersion,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException)
+                {
+                    // Another instance may still be running from that set.
+                }
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // Housekeeping must never keep the backend from starting.
         }
     }
 

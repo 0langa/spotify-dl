@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private bool _jobRunning;
     private bool _shuttingDown;
     private bool _closeApproved;
+    private string? _relaunchAfterClose;
     private bool _bulkSelectionUpdate;
     private bool _syncingSelectAll;
     private bool _syncingQuickFormat;
@@ -85,6 +86,14 @@ public partial class MainWindow : Window
             StatusText.Text = "Outdated alternate backend replaced with bundled backend";
         });
         _uiReady = true;
+        if (Environment.ProcessPath is { Length: > 0 } runningExecutable)
+        {
+            UpdateInstaller.CleanupRetired(runningExecutable);
+            UpdateInstaller.CleanupDownloads(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PlaylistDL",
+                "updates"));
+        }
         // Subscribed after the restore so a queue.json that could not be read is never
         // overwritten with an empty queue before the user changes anything.
         _queue.Replace(_queueStore.Load());
@@ -143,6 +152,16 @@ public partial class MainWindow : Window
             // The window must close even if the backend refuses to stop cleanly.
         }
 
+        if (_relaunchAfterClose is { Length: > 0 } updated && !UpdateInstaller.Relaunch(updated))
+        {
+            MessageBox.Show(
+                this,
+                $"The update is installed. Start it again from {updated}.",
+                "Update installed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+
         _closeApproved = true;
         Close();
     }
@@ -156,7 +175,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+            var current = CurrentVersion();
             _availableUpdate = await _updateService.CheckAsync(current);
             _settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
             TrySaveSettings();
@@ -440,6 +459,42 @@ public partial class MainWindow : Window
             DownloadButton.IsEnabled = true;
         }
     }
+
+    /// <summary>Opens the verified download and install flow for an available release.</summary>
+    private void OfferUpdate(UpdateResult update)
+    {
+        if (_jobRunning || _queueRunning || _sourceOperationCts is not null)
+        {
+            StatusText.Text = "Finish or cancel the running download before installing an update";
+            return;
+        }
+
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(executable))
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = update.ReleasePage.AbsoluteUri,
+                UseShellExecute = true,
+            });
+            return;
+        }
+
+        var dialog = new UpdateWindow(update, CurrentVersion(), executable) { Owner = this };
+        dialog.ShowDialog();
+        if (!dialog.RestartRequested)
+        {
+            return;
+        }
+
+        // The new binary is in place; start it only once this instance has released the
+        // backend session, so the two versions never share the extracted helper folder.
+        _relaunchAfterClose = executable;
+        Close();
+    }
+
+    private static Version CurrentVersion() =>
+        Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
 
     private void QueueButton_Click(object sender, RoutedEventArgs e)
     {
@@ -1610,11 +1665,7 @@ public partial class MainWindow : Window
     {
         if (_availableUpdate is not null)
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = _availableUpdate.ReleasePage.AbsoluteUri,
-                UseShellExecute = true,
-            });
+            OfferUpdate(_availableUpdate);
             return;
         }
 
@@ -1622,7 +1673,7 @@ public partial class MainWindow : Window
         UpdateButton.Content = "Checking…";
         try
         {
-            var current = Assembly.GetEntryAssembly()?.GetName().Version ?? new Version(1, 0);
+            var current = CurrentVersion();
             _availableUpdate = await _updateService.CheckAsync(current);
             if (_availableUpdate is null)
             {
@@ -1632,8 +1683,9 @@ public partial class MainWindow : Window
             else
             {
                 UpdateButton.Content = $"Get {_availableUpdate.Tag}";
-                UpdateButton.ToolTip = "Open the latest verified GitHub release";
+                UpdateButton.ToolTip = "Download, verify, and install the latest release";
                 StatusText.Text = $"Playlist DL {_availableUpdate.Tag} is available";
+                OfferUpdate(_availableUpdate);
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or FormatException or InvalidDataException)
