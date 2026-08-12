@@ -142,7 +142,7 @@ public partial class LibraryWindow : Window
 
         _checking = true;
         SetButtonsEnabled(false);
-        HealthText.Visibility = Visibility.Visible;
+        HealthPanel.Visibility = Visibility.Visible;
         HealthText.Text = "Checking files…";
         try
         {
@@ -225,8 +225,8 @@ public partial class LibraryWindow : Window
             // Everything the scan could not see looks missing, so offering to reopen those
             // tracks would throw away paths to files that are still there.
             HealthText.Text =
-                $"{entry.Name}: {report.Summary}. Reconnect the folder and check again — " +
-                "nothing was changed.";
+                $"{entry.Name}: {report.Summary}. The missing files were left alone — " +
+                "make the folder readable and check again.";
             return;
         }
 
@@ -275,15 +275,13 @@ public partial class LibraryWindow : Window
     private async Task<int?> Repair(
         string sourceUrl, Func<int> repair, Func<int, string> describe)
     {
+        // Recorded before the write, not after: the window can be closed while the repair
+        // is in flight, and the caller reads RepairedSources as soon as it returns. A
+        // repair that then changes nothing only costs the caller one reload.
+        _repaired.Add(sourceUrl);
         try
         {
             var count = await Task.Run(repair);
-            if (count > 0)
-            {
-                // The main window holds its own copy of this job and would write it back.
-                _repaired.Add(sourceUrl);
-            }
-
             if (!_closed)
             {
                 HealthText.Text = describe(count);

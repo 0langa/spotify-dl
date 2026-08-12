@@ -175,6 +175,44 @@ public sealed class DownloadQueue
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Replaces the durable snapshot of every job whose source <paramref name="lookup"/>
+    /// returns a newer entry for, e.g. after the library repaired it.
+    /// </summary>
+    /// <remarks>
+    /// The live session is dropped with it, because the queued selection is derived from
+    /// the snapshot when the job runs.
+    /// </remarks>
+    /// <returns>How many queued jobs were refreshed.</returns>
+    public int RefreshSnapshots(Func<string, SavedJob?> lookup)
+    {
+        ArgumentNullException.ThrowIfNull(lookup);
+        var refreshed = 0;
+        for (var index = 0; index < _jobs.Count; index++)
+        {
+            if (lookup(_jobs[index].SourceUrl) is not { } snapshot)
+            {
+                continue;
+            }
+
+            _jobs[index] = _jobs[index] with
+            {
+                Snapshot = snapshot,
+                PlaylistId = null,
+                AllTracks = [],
+                Tracks = [],
+            };
+            refreshed++;
+        }
+
+        if (refreshed > 0)
+        {
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        return refreshed;
+    }
+
     /// <summary>Moves one job by <paramref name="offset"/> places; returns its new index.</summary>
     public int Move(int index, int offset)
     {

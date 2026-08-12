@@ -1598,26 +1598,69 @@ public partial class MainWindow : Window
     {
         var dialog = new LibraryWindow(_library) { Owner = this };
         var opened = dialog.ShowDialog() == true && dialog.SelectedJob is not null;
+        var repairedSource = ReconcileRepairedJobs(dialog.RepairedSources);
         if (opened)
         {
             await RestoreJobAsync(dialog.SelectedJob!, dialog.SyncRequested);
             return;
         }
 
-        // A repair rewrote the library entry. The grid still holds the pre-repair copy and
-        // the next save would put it back, so the loaded job is reloaded from the library.
-        var current = _playlist?.SourceUrl;
-        if (string.IsNullOrWhiteSpace(current) ||
-            !dialog.RepairedSources.Contains(current, StringComparer.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var repaired = _library.Load(current);
-        if (repaired is not null)
+        if (repairedSource is not null && _library.Load(repairedSource) is { } repaired)
         {
             await RestoreJobAsync(repaired, sync: false);
         }
+    }
+
+    /// <summary>
+    /// Brings everything that mirrors the library back in line after a repair.
+    /// </summary>
+    /// <remarks>
+    /// The library window writes only the library entry, but the same job is mirrored in
+    /// the grid, in the resume file, and in every queued job's snapshot. Any of those
+    /// would write the pre-repair state back over the repair, so the stale copies are
+    /// dropped or refreshed here.
+    /// </remarks>
+    /// <returns>The loaded source that was repaired and should be restored, if any.</returns>
+    private string? ReconcileRepairedJobs(IReadOnlyCollection<string> repairedSources)
+    {
+        if (repairedSources.Count == 0)
+        {
+            return null;
+        }
+
+        var resume = _jobStore.Load();
+        if (resume is not null &&
+            repairedSources.Contains(resume.SourceUrl, StringComparer.OrdinalIgnoreCase) &&
+            _library.Load(resume.SourceUrl) is { } refreshed)
+        {
+            try
+            {
+                _jobStore.Save(refreshed);
+                _savedJob = refreshed;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // The library entry is repaired either way; Resume just stays stale.
+            }
+        }
+
+        _queue.RefreshSnapshots(source =>
+            repairedSources.Contains(source, StringComparer.OrdinalIgnoreCase)
+                ? _library.Load(source)
+                : null);
+
+        var current = _playlist?.SourceUrl;
+        if (string.IsNullOrWhiteSpace(current) ||
+            !repairedSources.Contains(current, StringComparer.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // The grid holds the pre-repair rows and the next save would put them back, so the
+        // loaded source is dropped now and restored from the repaired entry below.
+        InvalidateBackendSession("Saved job repaired — reloading it…");
+        return current;
     }
 
     private async Task RestoreJobAsync(SavedJob saved, bool sync)

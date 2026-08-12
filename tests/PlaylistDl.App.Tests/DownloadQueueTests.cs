@@ -40,6 +40,48 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void RefreshSnapshotsReplacesRepairedJobsAndDropsTheirSession()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+        var repairedUrl = queue.Items[0].SourceUrl;
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+        var repaired = new SavedJob
+        {
+            SourceUrl = repairedUrl,
+            SourceName = "first",
+            OutputDirectory = @"C:\music",
+            Tracks = [new SavedTrack { Id = "t1", IsSelected = true, IsComplete = false }],
+        };
+
+        var refreshed = queue.RefreshSnapshots(
+            source => source == repairedUrl ? repaired : null);
+
+        Assert.Equal(1, refreshed);
+        Assert.Equal(1, changes);
+        Assert.Same(repaired, queue.Items[0].Snapshot);
+        // The resolved session belongs to the pre-repair selection and has to be redone.
+        Assert.True(queue.Items[0].NeedsResolve);
+        Assert.False(queue.Items[1].NeedsResolve);
+    }
+
+    [Fact]
+    public void RefreshSnapshotsLeavesTheQueueAloneWhenNothingWasRepaired()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        var before = queue.Items[0];
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+
+        Assert.Equal(0, queue.RefreshSnapshots(_ => null));
+        Assert.Same(before, queue.Items[0]);
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();

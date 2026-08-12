@@ -56,6 +56,11 @@ public sealed record LibraryHealthReport(
                 return $"{Unreachable} files are in a folder that is not available right now";
             }
 
+            if (IsHealthy && ScanComplete)
+            {
+                return $"{Present} files present";
+            }
+
             var parts = new List<string> { $"{Present} present" };
             if (Missing > 0)
             {
@@ -66,9 +71,8 @@ public sealed record LibraryHealthReport(
                 parts.Add($"{Moved} moved");
             }
 
-            return IsHealthy && ScanComplete
-                ? $"{Present} files present"
-                : string.Join(" · ", parts) + (ScanComplete ? string.Empty : " (folder read only in part)");
+            return string.Join(" · ", parts) +
+                (ScanComplete ? string.Empty : " (folder read only in part)");
         }
     }
 }
@@ -84,12 +88,40 @@ public sealed record LibraryHealthReport(
 /// </remarks>
 public sealed class LibraryHealthScanner
 {
-    private readonly LibraryStore _library;
+    /// <summary>One output folder as this scan sees it.</summary>
+    private sealed record FolderIndex(
+        Dictionary<string, string?>? ByName,
+        bool Complete,
+        bool RootAvailable,
+        string? Root);
 
-    public LibraryHealthScanner(LibraryStore library) => _library = library;
+    private readonly LibraryStore _library;
+    private readonly Func<string, IEnumerable<string>> _enumerate;
+
+    public LibraryHealthScanner(LibraryStore library)
+        : this(library, EnumerateFiles)
+    {
+    }
+
+    /// <summary>Test seam for folders that cannot be read in full.</summary>
+    internal LibraryHealthScanner(LibraryStore library, Func<string, IEnumerable<string>> enumerate)
+    {
+        _library = library;
+        _enumerate = enumerate;
+    }
 
     /// <summary>Checks every saved job against its own output folder.</summary>
-    public IReadOnlyList<LibraryHealthReport> ScanAll() => [.. _library.List().Select(job => Scan(job))];
+    /// <remarks>
+    /// The claimed paths and the folder indexes are built once and shared, because saved
+    /// jobs normally sit under one music folder and would otherwise be walked once per job.
+    /// </remarks>
+    public IReadOnlyList<LibraryHealthReport> ScanAll()
+    {
+        var jobs = _library.List();
+        var claimed = ClaimedPaths(jobs);
+        var folders = new Dictionary<string, FolderIndex>(StringComparer.OrdinalIgnoreCase);
+        return [.. jobs.Select(job => Scan(job, null, claimed, folders))];
+    }
 
     /// <summary>
     /// Classifies every completed track of one job. A missing file whose name turns up
@@ -99,9 +131,21 @@ public sealed class LibraryHealthScanner
     public LibraryHealthReport Scan(SavedJob job, string? searchRoot = null)
     {
         ArgumentNullException.ThrowIfNull(job);
+        return Scan(
+            job,
+            searchRoot,
+            ClaimedPaths(_library.List()),
+            new Dictionary<string, FolderIndex>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private LibraryHealthReport Scan(
+        SavedJob job,
+        string? searchRoot,
+        IReadOnlySet<string> claimed,
+        Dictionary<string, FolderIndex> folders)
+    {
         var root = string.IsNullOrWhiteSpace(searchRoot) ? job.OutputDirectory : searchRoot;
-        var (byName, scanComplete) = BuildNameIndex(root);
-        var claimed = ClaimedPaths();
+        var folder = IndexFor(root, folders);
         var adopted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var reports = new List<TrackFileReport>();
         foreach (var track in job.Tracks)
@@ -118,15 +162,28 @@ public sealed class LibraryHealthScanner
                 continue;
             }
 
-            reports.Add(Classify(track, byName, claimed, adopted));
+            reports.Add(Classify(track, folder, claimed, adopted));
         }
 
-        return new LibraryHealthReport(job, reports, scanComplete);
+        return new LibraryHealthReport(job, reports, folder.Complete);
+    }
+
+    private FolderIndex IndexFor(string? root, Dictionary<string, FolderIndex> folders)
+    {
+        var key = string.IsNullOrWhiteSpace(root) ? string.Empty : Canonical(root);
+        if (folders.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var folder = BuildNameIndex(root);
+        folders[key] = folder;
+        return folder;
     }
 
     private TrackFileReport Classify(
         SavedTrack track,
-        IReadOnlyDictionary<string, string?>? byName,
+        FolderIndex folder,
         IReadOnlySet<string> claimed,
         HashSet<string> adopted)
     {
@@ -142,15 +199,17 @@ public sealed class LibraryHealthScanner
             }
 
             // FileInfo.Exists is false for an unplugged drive, an offline share, and a
-            // renamed parent as well. Those files are not gone, so they must not be
-            // reported as deleted.
+            // renamed parent as well. When the whole output folder is unavailable those
+            // files are not gone, so they must not be reported as deleted. Inside a folder
+            // that reads fine, a vanished subfolder is an ordinary reorganization.
             var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            var parentMissing = !string.IsNullOrEmpty(directory) && !Directory.Exists(directory);
+            if (parentMissing && (!folder.RootAvailable || !IsUnder(path, folder.Root)))
             {
                 return new TrackFileReport(track, TrackFileState.Unreachable, null);
             }
 
-            var candidate = FindMoved(path, byName, claimed, adopted);
+            var candidate = FindMoved(path, folder, claimed, adopted);
             if (candidate is not null)
             {
                 adopted.Add(candidate);
@@ -175,17 +234,18 @@ public sealed class LibraryHealthScanner
     /// File names collide by design: every album has a "01 - Intro.mp3" and jobs share one
     /// output root, so a name that occurs more than once, that another saved job still
     /// points at, or that this scan already handed to another track is refused rather than
-    /// guessed at.
+    /// guessed at. A folder that could not be read in full proves no name unique, so it
+    /// adopts nothing at all.
     /// </remarks>
     private static string? FindMoved(
         string path,
-        IReadOnlyDictionary<string, string?>? byName,
+        FolderIndex folder,
         IReadOnlySet<string> claimed,
         IReadOnlySet<string> adopted)
     {
         var name = Path.GetFileName(path);
-        if (byName is null || name.Length == 0 ||
-            !byName.TryGetValue(name, out var candidate) || candidate is null)
+        if (!folder.Complete || folder.ByName is null || name.Length == 0 ||
+            !folder.ByName.TryGetValue(name, out var candidate) || candidate is null)
         {
             return null;
         }
@@ -208,16 +268,16 @@ public sealed class LibraryHealthScanner
     }
 
     /// <summary>Every file path the library still points at, so no file is adopted twice.</summary>
-    private IReadOnlySet<string> ClaimedPaths()
+    private static IReadOnlySet<string> ClaimedPaths(IEnumerable<SavedJob> jobs)
     {
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var job in _library.List())
+        foreach (var job in jobs)
         {
             foreach (var track in job.Tracks)
             {
                 if (track.IsComplete && !string.IsNullOrWhiteSpace(track.OutputPath))
                 {
-                    claimed.Add(track.OutputPath);
+                    claimed.Add(Canonical(track.OutputPath));
                 }
             }
         }
@@ -225,37 +285,41 @@ public sealed class LibraryHealthScanner
         return claimed;
     }
 
+    private static IEnumerable<string> EnumerateFiles(string root) =>
+        Directory.EnumerateFiles(root, "*", new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            // A folder that cannot be read must be reported, not silently skipped: an
+            // unseen file would otherwise be offered for deletion as missing.
+            IgnoreInaccessible = false,
+            AttributesToSkip = FileAttributes.System,
+            // Junctions and symlinks are followed and .NET does not detect cycles.
+            MaxRecursionDepth = 24,
+        });
+
     /// <summary>Indexes files under a folder by name; a repeated name is stored as ambiguous.</summary>
-    /// <returns>The index, and whether the whole folder could be read.</returns>
-    private static (Dictionary<string, string?>? Index, bool Complete) BuildNameIndex(string? searchRoot)
+    private FolderIndex BuildNameIndex(string? searchRoot)
     {
         if (string.IsNullOrWhiteSpace(searchRoot))
         {
-            return (null, true);
+            return new FolderIndex(null, true, false, null);
         }
 
-        if (!Directory.Exists(searchRoot))
+        var root = Canonical(searchRoot);
+        if (!Directory.Exists(root))
         {
             // The folder itself is gone; its tracks are classified unreachable below.
-            return (null, true);
+            return new FolderIndex(null, true, false, root);
         }
 
         var index = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var complete = true;
         try
         {
-            var options = new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                // A folder that cannot be read must be reported, not silently skipped:
-                // an unseen file would otherwise be offered for deletion as missing.
-                IgnoreInaccessible = false,
-                AttributesToSkip = FileAttributes.System,
-            };
-            foreach (var file in Directory.EnumerateFiles(searchRoot, "*", options))
+            foreach (var file in _enumerate(root))
             {
                 var name = Path.GetFileName(file);
-                if (!index.TryAdd(name, file))
+                if (!index.TryAdd(name, Canonical(file)))
                 {
                     index[name] = null;
                 }
@@ -264,12 +328,12 @@ public sealed class LibraryHealthScanner
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException or SecurityException)
         {
-            // A partial index still relocates what it found, but the caller must know that
-            // the rest of the folder was never seen.
+            // Nothing is adopted and nothing is reopened from a partial read; the caller
+            // reports that the folder was only seen in part.
             complete = false;
         }
 
-        return (index, complete);
+        return new FolderIndex(index, complete, true, root);
     }
 
     /// <summary>Points the library at files that turned up in a new location.</summary>
@@ -277,6 +341,11 @@ public sealed class LibraryHealthScanner
     public int Relocate(LibraryHealthReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
+        if (!report.ScanComplete)
+        {
+            return 0;
+        }
+
         var moved = report.Tracks
             .Where(track => track.State == TrackFileState.Moved && track.FoundPath is not null)
             .ToList();
@@ -303,8 +372,11 @@ public sealed class LibraryHealthScanner
             return 0;
         }
 
+        // The scan may be minutes old and a probe can fail for a moment, so every file is
+        // checked again right before its only record of the path is dropped.
         var gone = report.Tracks
             .Where(track => track.State is TrackFileState.Missing or TrackFileState.Empty)
+            .Where(track => ConfirmedGone(track.Track.OutputPath))
             .ToList();
         if (gone.Count == 0)
         {
@@ -327,6 +399,34 @@ public sealed class LibraryHealthScanner
         }
 
         return reopened;
+    }
+
+    /// <summary>Whether the file is provably not usable right now.</summary>
+    private static bool ConfirmedGone(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return true;
+        }
+
+        try
+        {
+            var file = new FileInfo(path);
+            if (file.Exists)
+            {
+                return file.Length == 0;
+            }
+
+            // A file whose folder is not there either may only be offline.
+            var directory = Path.GetDirectoryName(path);
+            return string.IsNullOrEmpty(directory) || Directory.Exists(directory);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException or
+            NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -365,7 +465,7 @@ public sealed class LibraryHealthScanner
             }
             if (!string.IsNullOrWhiteSpace(track.OutputPath))
             {
-                byPath.TryAdd(track.OutputPath, track);
+                byPath.TryAdd(Canonical(track.OutputPath), track);
             }
         }
 
@@ -384,13 +484,12 @@ public sealed class LibraryHealthScanner
             }
             if (current is null && !string.IsNullOrWhiteSpace(saved.OutputPath))
             {
-                byPath.TryGetValue(saved.OutputPath, out current);
+                byPath.TryGetValue(Canonical(saved.OutputPath), out current);
             }
 
             // A track that finished again while the check ran is left alone unless its
             // file is the one the repair is about.
-            if (current is null || !current.IsComplete ||
-                !string.Equals(current.OutputPath, saved.OutputPath, StringComparison.OrdinalIgnoreCase))
+            if (current is null || !current.IsComplete || !SamePath(current.OutputPath, saved.OutputPath))
             {
                 continue;
             }
@@ -427,5 +526,41 @@ public sealed class LibraryHealthScanner
         {
             // Leaving the empty file behind only means the check reports it again.
         }
+    }
+
+    /// <summary>
+    /// The library stores whatever path the backend produced and the folder is enumerated
+    /// from whatever the user typed, so both are compared in one canonical form.
+    /// </summary>
+    private static string Canonical(string path)
+    {
+        try
+        {
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException or
+            IOException or SecurityException)
+        {
+            return path;
+        }
+    }
+
+    private static bool SamePath(string? left, string? right) =>
+        string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)
+            ? string.IsNullOrWhiteSpace(left) && string.IsNullOrWhiteSpace(right)
+            : string.Equals(Canonical(left), Canonical(right), StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnder(string path, string? root)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return false;
+        }
+
+        var full = Canonical(path);
+        var prefix = Canonical(root);
+        return full.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+            full.StartsWith(prefix + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 }

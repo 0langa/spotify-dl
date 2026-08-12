@@ -35,8 +35,10 @@
         </DataTemplate>
       </ListBox.ItemTemplate>
     </ListBox>
-    <TextBlock Grid.Row="2" x:Name="HealthText" Foreground="#AEB6C5" TextWrapping="Wrap"
-               Margin="0,12,0,0" Visibility="Collapsed" />
+    <ScrollViewer Grid.Row="2" x:Name="HealthPanel" MaxHeight="120" Margin="0,12,0,0"
+                  VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+      <TextBlock x:Name="HealthText" Foreground="#AEB6C5" TextWrapping="Wrap" />
+    </ScrollViewer>
     <DockPanel Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
       <Button DockPanel.Dock="Left" x:Name="DeleteButton" Content="Delete" Width="90" Click="DeleteButton_Click"
               ToolTip="Remove this saved job (downloaded files stay on disk)" />

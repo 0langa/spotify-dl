@@ -324,6 +324,93 @@ public sealed class LibraryHealthTests : IDisposable
     }
 
     [Fact]
+    public void AFolderThatCouldNotBeReadInFullAdoptsNothingAndReopensNothing()
+    {
+        WriteFile(Path.Combine("Moved", "song.mp3"));
+        var job = Job(
+            Complete("a", MusicPath("song.mp3")),
+            Complete("gone", MusicPath("gone.mp3")));
+        Store.Save(job);
+        var scanner = new LibraryHealthScanner(Store, _ => ThrowsPartWayThrough());
+
+        var report = scanner.Scan(job);
+
+        Assert.False(report.ScanComplete);
+        Assert.False(report.CanReopenMissing);
+        // A name can only be proven unique by a folder that was read in full.
+        Assert.Equal(0, report.Moved);
+        Assert.Equal(0, scanner.Relocate(report));
+        Assert.Equal(0, scanner.ForgetMissing(report));
+        Assert.Contains("read only in part", report.Summary);
+        Assert.All(Store.Load(job.SourceUrl)!.Tracks, track => Assert.True(track.IsComplete));
+    }
+
+    private static IEnumerable<string> ThrowsPartWayThrough()
+    {
+        yield return "first.mp3";
+        throw new UnauthorizedAccessException("subfolder denied");
+    }
+
+    [Fact]
+    public void ASubfolderRemovedInsideAReadableRootIsRepairableRatherThanUnreachable()
+    {
+        var moved = WriteFile(Path.Combine("Now here", "song.mp3"));
+        var job = Job(Complete("a", MusicPath(Path.Combine("Was here", "song.mp3"))));
+
+        var report = Scanner.Scan(job);
+
+        // The output folder reads fine, so a folder the user reorganized is not "offline".
+        Assert.Equal(0, report.Unreachable);
+        Assert.Equal(1, report.Moved);
+        Assert.Equal(moved, report.Tracks.Single().FoundPath);
+        Assert.True(report.CanReopenMissing);
+    }
+
+    [Fact]
+    public void AFileThatCameBackBeforeTheRepairRanIsNotReopened()
+    {
+        var job = Job(Complete("gone", MusicPath("gone.mp3")));
+        Store.Save(job);
+        var report = Scanner.Scan(job);
+
+        // The probe failed for a moment; the file is there when the repair runs.
+        WriteFile("gone.mp3");
+
+        Assert.Equal(0, Scanner.ForgetMissing(report));
+        Assert.True(Store.Load(job.SourceUrl)!.Tracks.Single().IsComplete);
+    }
+
+    [Fact]
+    public void PathsAreComparedInOneCanonicalForm()
+    {
+        var file = WriteFile(Path.Combine("Sub", "song.mp3"));
+        var job = Job(Complete("a", Path.Combine(MusicDirectory, "Sub", ".", "song.mp3")));
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(TrackFileState.Present, report.Tracks.Single().State);
+        Assert.True(report.IsHealthy);
+        Assert.True(File.Exists(file));
+    }
+
+    [Fact]
+    public void AFileAnotherJobClaimsInADifferentlyWrittenPathIsNotAdopted()
+    {
+        var other = WriteFile(Path.Combine("Other", "song.mp3"));
+        Store.Save(new SavedJob
+        {
+            SourceUrl = "https://open.spotify.com/album/two",
+            SourceName = "Album",
+            OutputDirectory = MusicDirectory,
+            Tracks = [Complete("b", Path.Combine(MusicDirectory, "Other", ".", "song.mp3"))],
+        });
+        var job = Job(Complete("a", MusicPath("song.mp3")));
+
+        Assert.Equal(TrackFileState.Missing, Scanner.Scan(job).Tracks.Single().State);
+        Assert.True(File.Exists(other));
+    }
+
+    [Fact]
     public void AnUnreadablePathCountsAsMissingInsteadOfThrowing()
     {
         var job = Job(Complete("bad", "::not a path::"));
