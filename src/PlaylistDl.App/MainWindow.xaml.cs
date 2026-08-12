@@ -1597,9 +1597,26 @@ public partial class MainWindow : Window
     private async void LibraryButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new LibraryWindow(_library) { Owner = this };
-        if (dialog.ShowDialog() == true && dialog.SelectedJob is not null)
+        var opened = dialog.ShowDialog() == true && dialog.SelectedJob is not null;
+        if (opened)
         {
-            await RestoreJobAsync(dialog.SelectedJob, dialog.SyncRequested);
+            await RestoreJobAsync(dialog.SelectedJob!, dialog.SyncRequested);
+            return;
+        }
+
+        // A repair rewrote the library entry. The grid still holds the pre-repair copy and
+        // the next save would put it back, so the loaded job is reloaded from the library.
+        var current = _playlist?.SourceUrl;
+        if (string.IsNullOrWhiteSpace(current) ||
+            !dialog.RepairedSources.Contains(current, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var repaired = _library.Load(current);
+        if (repaired is not null)
+        {
+            await RestoreJobAsync(repaired, sync: false);
         }
     }
 

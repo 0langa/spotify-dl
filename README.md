@@ -83,8 +83,9 @@ Minimal JSON:
 - Queued jobs restored after a restart are resolved again before they run, so a source that has become unavailable is reported and the rest of the queue continues.
 - Cross-job duplicate handling matches completed library tracks by Spotify track id or URL and only reuses a file already in the requested output format. Imported manifests without a Spotify URL therefore match only within their own source.
 - Hard-linked duplicates need the source file and the output folder on one drive; otherwise the file is copied instead. The skip policy leaves the file where it is, so the playlist file references it by absolute path.
-- The library health check looks for a moved file by name under the job's output folder only, and takes the first match. A file renamed by another tool, or moved outside that folder, is reported as missing rather than relocated.
-- Reopening missing tracks changes only the library entry; nothing is deleted and nothing is downloaded until the job is opened or synced.
+- The library health check looks for a moved file by name under the job's output folder only. A file that was renamed, moved outside that folder, or whose name occurs more than once under it is reported as missing rather than relocated, and a file another saved job still points at is never adopted.
+- Reopening missing tracks changes only the library entry and deletes empty leftover files; nothing else on disk is touched and nothing is downloaded until the job is opened or synced.
+- When the output folder cannot be read in full, the check reports what it saw but does not offer to reopen tracks, because an unread file is indistinguishable from a deleted one.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
 - Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.
 - In-app updates replace the running executable in its current folder, so a copy in a write-protected location (for example Program Files) must be updated manually from the release page.

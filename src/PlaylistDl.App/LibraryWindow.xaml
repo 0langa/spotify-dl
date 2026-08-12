@@ -38,7 +38,7 @@
     <TextBlock Grid.Row="2" x:Name="HealthText" Foreground="#AEB6C5" TextWrapping="Wrap"
                Margin="0,12,0,0" Visibility="Collapsed" />
     <DockPanel Grid.Row="3" Margin="0,14,0,0" LastChildFill="False">
-      <Button DockPanel.Dock="Left" Content="Delete" Width="90" Click="DeleteButton_Click"
+      <Button DockPanel.Dock="Left" x:Name="DeleteButton" Content="Delete" Width="90" Click="DeleteButton_Click"
               ToolTip="Remove this saved job (downloaded files stay on disk)" />
       <Button DockPanel.Dock="Left" x:Name="CheckFilesButton" Content="Check files" Width="100"
               Margin="10,0,0,0" Click="CheckFilesButton_Click"
@@ -46,9 +46,9 @@
       <Button DockPanel.Dock="Left" x:Name="CheckAllButton" Content="Check all" Width="90"
               Margin="10,0,0,0" Click="CheckAllButton_Click"
               ToolTip="Check every saved job against the files on disk" />
-      <Button DockPanel.Dock="Right" Content="Open" Width="90" Background="#4F7DFF" Foreground="White"
+      <Button DockPanel.Dock="Right" x:Name="OpenButton" Content="Open" Width="90" Background="#4F7DFF" Foreground="White"
               Click="OpenButton_Click" ToolTip="Restore this job exactly as last saved" />
-      <Button DockPanel.Dock="Right" Content="Sync" Width="90" Margin="0,0,10,0" Click="SyncButton_Click"
+      <Button DockPanel.Dock="Right" x:Name="SyncButton" Content="Sync" Width="90" Margin="0,0,10,0" Click="SyncButton_Click"
               ToolTip="Re-read the source and select only new or unfinished tracks" />
       <Button DockPanel.Dock="Right" Content="Close" Width="90" Margin="0,0,10,0" IsCancel="True" />
     </DockPanel>

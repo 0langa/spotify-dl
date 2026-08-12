@@ -6,10 +6,11 @@
 
 ### Added
 
-- Library health check. Check files compares one saved job against the disk and reports how many files are present, missing, empty, or moved; Check all does the same for every saved job at once.
-- Files that were moved or renamed under the job's output folder are found by name and the library is pointed at their new location, so they are not downloaded a second time.
-- Tracks whose file is gone or empty can be marked unfinished again, which puts them back into Open, Sync, and Resume instead of being skipped forever.
-- After reopening tracks the job can be opened straight away with exactly those tracks selected.
+- Library health check. Check files compares one saved job against the disk and reports how many of its files are present, missing or empty, and moved; Check all does the same for every saved job against its own output folder.
+- A file that was moved to another folder under the job's output folder is found by name and the library is pointed at it, so it is not downloaded a second time. Only a name that occurs exactly once and that no other saved job uses is matched, because album track numbers and playlist positions produce the same file name across sources.
+- Tracks whose file is gone or empty can be marked unfinished again, which puts them back into Open, Sync, and Resume instead of being skipped forever, and the job can be opened straight away to download them.
+- An output folder that is not available — an unplugged drive, an offline share, a renamed parent — is reported as such instead of as deleted files, and the reopen option is withheld until the folder is readable again, so nothing is thrown away on the strength of a scan that could not see the files.
+- An empty leftover file is deleted when its track is reopened, because the downloader skips a track whose output file already exists.
 
 ### Fixed
 
