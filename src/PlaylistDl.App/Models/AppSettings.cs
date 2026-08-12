@@ -33,6 +33,9 @@ public sealed class AppSettings
     /// <summary>Normalize output loudness to the EBU R128 streaming target.</summary>
     public bool NormalizeLoudness { get; set; }
 
+    /// <summary>Check every saved file before a track is reported as done.</summary>
+    public bool VerifyDownloads { get; set; } = true;
+
     /// <summary>What to do when a track was already downloaded by an earlier job.</summary>
     /// <remarks>One of download, skip, copy, hardlink.</remarks>
     public string DuplicatePolicy { get; set; } = "download";

@@ -186,6 +186,9 @@ def download_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict[str, Any]:
     _FakeDownloader.last_instance = None
     _FakeDownloader.batches = []
     songs = [_fake_song("One", 1), _fake_song("Two", 2)]
+    # These fixtures script fake output paths, so the saved-file check is exercised
+    # by the dedicated integrity tests instead.
+    instance._verify_downloads = False
     instance._songs["job"] = songs  # type: ignore[assignment]
     instance._names["job"] = "My Mix"
     return {"engine": instance, "events": events, "songs": songs, "out": str(tmp_path)}

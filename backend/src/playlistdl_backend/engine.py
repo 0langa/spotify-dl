@@ -55,6 +55,10 @@ NAMING_PRESETS = {
 # Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes.
 _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "integrity_failed",
+        ("integrity check failed",),
+    ),
+    (
         "youtube_blocked",
         (
             "sign in to confirm",
@@ -113,6 +117,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _FAILURE_PRIORITY = (
+    "integrity_failed",
     "youtube_blocked",
     "network",
     "metadata_session",
@@ -151,6 +156,10 @@ FAILURE_HINTS = {
         "Audio conversion failed. Verify the bundled FFmpeg is intact "
         "or try a different output format."
     ),
+    "integrity_failed": (
+        "Some downloads did not hold the expected audio and were rejected. "
+        "Retry them, or use the per-track Source button to pick a different upload."
+    ),
     "unknown": "Some tracks failed to download. Retry the failed tracks to try again.",
 }
 
@@ -164,7 +173,13 @@ _BLOCKED_WINDOW_LIMIT = 2
 _RETRY_BACKOFF_SECONDS = 8.0
 _FALLBACK_PAUSE_SECONDS = 0.5
 _SPOTIFY_RESOLVE_RETRY_SECONDS = 1.0
-_FALLBACK_FAILURE_CLASSES = frozenset({"no_match", "source_unavailable", "youtube_blocked"})
+_FALLBACK_FAILURE_CLASSES = frozenset(
+    {"no_match", "source_unavailable", "youtube_blocked", "integrity_failed"}
+)
+# A saved file may legitimately differ from the source length by an intro, an outro, or
+# a slightly different master, so only a clear mismatch counts as a bad download.
+_DURATION_TOLERANCE_SECONDS = 10.0
+_DURATION_TOLERANCE_FRACTION = 0.10
 _IDENTITY_STOPWORDS = frozenset(
     {
         "a",
@@ -207,6 +222,120 @@ def _default_probe(url: str) -> tuple[bool, str]:
         return True, f"HTTP {response.status_code}"
     except requests.RequestException as exc:
         return False, str(exc)
+
+
+def _ffprobe_path() -> str:
+    """Use the ffprobe next to the configured ffmpeg, falling back to PATH."""
+    configured = os.environ.get("PLAYLISTDL_FFMPEG")
+    if configured:
+        sibling = Path(configured).with_name("ffprobe" + Path(configured).suffix)
+        if sibling.is_file():
+            return str(sibling)
+    return "ffprobe"
+
+
+def probe_media(path: str) -> tuple[bool, float | None, str]:
+    """Return whether a saved file decodes, its duration, and a short detail."""
+    import json as json_module
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            [
+                _ffprobe_path(),
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                # Only these two fields are read; keeping titles and file names out of the
+                # payload also keeps their encoding from mattering.
+                "-show_entries",
+                "format=duration:stream=codec_type",
+                path,
+            ],
+            capture_output=True,
+            # ffprobe writes UTF-8; decoding it with the Windows ANSI code page turned
+            # every non-Latin title into an unreadable file and a false rejection.
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # No usable probe is not the track's fault; verification is skipped.
+        return True, None, f"probe unavailable: {exc}"
+
+    if completed.returncode != 0:
+        return False, None, (completed.stderr or "the file could not be read").strip()[:200]
+
+    if not (completed.stdout or "").strip():
+        # An empty answer means the probe told us nothing, not that the file is bad.
+        return True, None, "probe returned nothing"
+
+    try:
+        report = json_module.loads(completed.stdout)
+    except ValueError:
+        return True, None, "probe output could not be read"
+
+    streams = report.get("streams") or []
+    if not any(stream.get("codec_type") == "audio" for stream in streams):
+        return False, None, "the file holds no audio stream"
+
+    duration_text = (report.get("format") or {}).get("duration")
+    try:
+        duration = float(duration_text) if duration_text is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    return True, duration, "ok"
+
+
+def format_duration(seconds: float) -> str:
+    total = int(round(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+_MANUAL_SOURCE_ATTRIBUTE = "_playlistdl_manual_source"
+
+
+def _remove_rejected_file(path: Path | str) -> None:
+    """Delete a file that failed verification so a retry can download it again."""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Could not remove the rejected download at %s", path)
+
+
+def check_download_integrity(
+    path: str,
+    expected_seconds: int,
+    probe: Callable[[str], tuple[bool, float | None, str]],
+    compare_duration: bool = True,
+) -> tuple[bool, str]:
+    """Reject a saved file that is empty, undecodable, or clearly the wrong length."""
+    file_path = Path(path)
+    try:
+        if not file_path.is_file():
+            return False, "integrity check failed: the file was not saved"
+        if file_path.stat().st_size == 0:
+            return False, "integrity check failed: the file is empty"
+    except OSError as exc:
+        return False, f"integrity check failed: the file could not be read ({exc})"
+
+    readable, duration, detail = probe(str(file_path))
+    if not readable:
+        return False, f"integrity check failed: {detail}"
+    # A hand-picked source is allowed to be a live or extended version, so only its
+    # readability is checked, never its length.
+    if duration is None or not expected_seconds or not compare_duration:
+        return True, "ok"
+
+    tolerance = max(_DURATION_TOLERANCE_SECONDS, expected_seconds * _DURATION_TOLERANCE_FRACTION)
+    if abs(duration - expected_seconds) > tolerance:
+        return False, (
+            "integrity check failed: the saved audio is "
+            f"{format_duration(duration)} but the track is {format_duration(expected_seconds)}"
+        )
+    return True, "ok"
 
 
 def _parse_duration_seconds(item: dict[str, Any]) -> int:
@@ -776,6 +905,8 @@ class Engine:
         self._names: dict[str, str] = {}
         self._cancel = threading.Event()
         self._progress_state: dict[str, tuple[int, str, str | None]] = {}
+        self._verify_downloads = True
+        self._media_probe: Callable[[str], tuple[bool, float | None, str]] = probe_media
 
     def _remember_source(self, playlist_id: str, name: str, songs: list[Song]) -> None:
         """Store one resolved source, dropping the least recently used ones."""
@@ -1085,6 +1216,7 @@ class Engine:
         ytdlp_args: str | None = None,
         embed_lyrics: bool = False,
         normalize_loudness: bool = False,
+        verify_downloads: bool | None = None,
         duplicate_policy: str = "download",
         existing_files: dict[str, str] | None = None,
     ) -> None:
@@ -1098,6 +1230,8 @@ class Engine:
                 f"Unsupported audio format: {audio_format}. "
                 f"Supported formats: {', '.join(SUPPORTED_FORMATS)}"
             )
+        if verify_downloads is not None:
+            self._verify_downloads = verify_downloads
         stored_songs = self._songs.get(playlist_id)
         if stored_songs is None:
             raise ValueError("Unknown or expired playlist id")
@@ -1120,6 +1254,7 @@ class Engine:
                 track_id = track_key(song)
                 if track_id in source_overrides:
                     song.download_url = validate_source_url(source_overrides[track_id])
+                    setattr(song, _MANUAL_SOURCE_ATTRIBUTE, True)
         for song in songs:
             normalize_song_for_download(song)
 
@@ -1334,6 +1469,16 @@ class Engine:
             except OSError:
                 continue
 
+            if self._verify_downloads:
+                ok, detail = check_download_integrity(
+                    str(existing), song.duration or 0, self._media_probe
+                )
+                if not ok:
+                    # The library copy is unusable; download this track normally instead
+                    # of adopting a bad file or deleting the user's existing one.
+                    logger.info("Not reusing %s: %s", track_id, detail)
+                    continue
+
             destination = _output_path_for(song, output_template, audio_format)
             record = self._reuse_one_download(song, existing, destination, duplicate_policy)
             if record is not None:
@@ -1349,7 +1494,8 @@ class Engine:
     ) -> dict[str, Any] | None:
         track_id = track_key(song)
         if _path_key(existing) == _path_key(destination) or duplicate_policy == "skip":
-            return self._reused_record(song, existing, "already downloaded")
+            # This path is the library's own file, not one this job produced.
+            return self._reused_record(song, existing, "already downloaded", removable=False)
 
         try:
             if destination.exists():
@@ -1376,7 +1522,9 @@ class Engine:
             logger.exception("Could not reuse an existing download for %s", track_id)
             return None
 
-    def _reused_record(self, song: Song, path: Path, status: str) -> dict[str, Any]:
+    def _reused_record(
+        self, song: Song, path: Path, status: str, removable: bool = True
+    ) -> dict[str, Any]:
         track_id = track_key(song)
         self._emit(
             {
@@ -1387,7 +1535,7 @@ class Engine:
                 "path": str(path),
             }
         )
-        record = self._result_record(song, path, track_id=track_id)
+        record = self._result_record(song, path, track_id=track_id, removable=removable)
         record["reused"] = status
         return record
 
@@ -1455,14 +1603,35 @@ class Engine:
                     )
         return False
 
-    @staticmethod
     def _result_record(
+        self,
         song: Song,
         path: Path | str | None,
         error: str | None = None,
         track_id: str | None = None,
+        removable: bool = True,
     ) -> dict[str, Any]:
         track_id = track_id or track_key(song)
+        verified: bool | None = None
+        if path is not None and self._verify_downloads:
+            # A saved path is not proof of a usable download; check before reporting done.
+            ok, detail = check_download_integrity(
+                str(path),
+                song.duration or 0,
+                self._media_probe,
+                compare_duration=not getattr(song, _MANUAL_SOURCE_ATTRIBUTE, False),
+            )
+            verified = ok
+            if not ok:
+                logger.warning("Rejected %s: %s", track_id, detail)
+                if removable:
+                    # spotDL skips a download whose output file already exists, so a
+                    # rejected file left in place would be handed back to every retry
+                    # and to every alternate source.
+                    _remove_rejected_file(path)
+                path = None
+                error = detail
+
         return {
             "track_id": track_id,
             "path": str(path) if path else None,
@@ -1471,6 +1640,7 @@ class Engine:
             "error_class": None if path else classify_failure(error),
             "source_url": getattr(song, "download_url", None),
             "fallback_used": False,
+            "verified": verified,
         }
 
     def _emit_window_results(
@@ -1528,6 +1698,10 @@ class Engine:
         songs_by_id = {track_key(song): song for song in batch}
         unmatched = list(new_errors)
         for record in failed:
+            if record["error_class"] == "integrity_failed":
+                # The saved file was inspected directly; a provider message about some
+                # other track must not replace that verdict.
+                continue
             song = songs_by_id[record["track_id"]]
             display_name = getattr(song, "display_name", None) or song.name
             identities = [
@@ -1548,6 +1722,10 @@ class Engine:
                 unmatched.remove(match)
                 record["error"] = match
         for record in failed:
+            if record["error_class"] == "integrity_failed":
+                # The saved file was inspected directly; a provider message cannot
+                # describe that outcome better.
+                continue
             if record["error"] is None and unmatched:
                 record["error"] = unmatched.pop(0)
             record["error_class"] = classify_failure(record["error"])

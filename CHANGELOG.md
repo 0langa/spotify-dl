@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.4.0 - 2026-08-12
+
+### Added
+
+- Every saved file is verified before its track is reported as done. A download that is missing, empty, does not decode, or is clearly the wrong length is rejected with the reason, and the existing alternate-source recovery tries a different upload instead.
+- Verification also covers files reused from the library by the skip, copy, and hard-link policies.
+- Settings can turn verification off; the check is skipped automatically when no probe is available, so a missing helper never fails a download.
+- A rejected file is deleted, because the downloader skips a track whose output file already exists and would otherwise hand the same broken file to every retry and every alternate source.
+- A library file that fails verification is downloaded normally instead of being reused, and the skip policy never deletes the library's own file.
+- A hand-picked source is checked for readability but not for length, so a deliberate live or extended version is accepted.
+
 ## 2.3.0 - 2026-08-12
 
 ### Added

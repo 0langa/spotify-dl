@@ -24,6 +24,9 @@ def policy_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any
     _FakeDownloader.batches = []
     songs = [_fake_song("One", 1), _fake_song("Two", 2)]
     instance._remember_source("job", "My Mix", songs)
+    # These fixtures script fake output paths, so the saved-file check is exercised
+    # by the dedicated integrity tests instead.
+    instance._verify_downloads = False
     library = tmp_path / "library"
     library.mkdir()
     existing = library / "One.mp3"
@@ -320,3 +323,50 @@ def test_hardlink_falls_back_to_a_copy_across_volumes(
     reused = _record(policy_env["events"], "id-1")
     assert reused["reused"] == "copied from library"
     assert Path(reused["path"]).read_bytes() == b"audio"
+
+
+def test_an_unusable_library_file_is_downloaded_instead_of_reused(
+    policy_env: dict[str, Any],
+) -> None:
+    engine: Engine = policy_env["engine"]
+    engine._verify_downloads = True
+    downloaded = policy_env["tmp"] / "downloaded.mp3"
+    downloaded.write_bytes(b"audio")
+    library = str(policy_env["existing"])
+    # Only the library copy is unreadable; a fresh download of the same track is fine.
+    engine._media_probe = lambda path: (
+        (False, None, "moov atom not found") if path == library else (True, 200.0, "ok")
+    )
+    _FakeDownloader.script = {
+        "id-1": [(str(downloaded), None)],
+        "id-2": [(str(downloaded), None)],
+    }
+
+    engine.download(
+        "job",
+        policy_env["out"],
+        duplicate_policy="copy",
+        existing_files={"id-1": library},
+    )
+
+    # The library copy was rejected, so the track went through a normal download.
+    assert _FakeDownloader.last_instance is not None
+    assert "id-1" in _FakeDownloader.last_instance.attempts
+
+
+def test_the_skip_policy_never_deletes_the_library_file(policy_env: dict[str, Any]) -> None:
+    engine: Engine = policy_env["engine"]
+    engine._verify_downloads = True
+    # The library file passes reuse verification but is judged too short afterwards.
+    durations = iter([200.0, 3.0])
+    engine._media_probe = lambda path: (True, next(durations, 3.0), "ok")
+    _FakeDownloader.script = {"id-2": [("/out/two.mp3", None)]}
+
+    engine.download(
+        "job",
+        policy_env["out"],
+        duplicate_policy="skip",
+        existing_files={"id-1": str(policy_env["existing"])},
+    )
+
+    assert policy_env["existing"].is_file()

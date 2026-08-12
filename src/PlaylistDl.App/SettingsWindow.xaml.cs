@@ -30,6 +30,7 @@ public partial class SettingsWindow : Window
         YtDlpArgsBox.Text = settings.YtDlpArgs ?? string.Empty;
         EmbedLyricsBox.IsChecked = settings.EmbedLyrics;
         NormalizeLoudnessBox.IsChecked = settings.NormalizeLoudness;
+        VerifyDownloadsBox.IsChecked = settings.VerifyDownloads;
         AutoUpdateCheckBox.IsChecked = settings.AutoUpdateCheck;
         UseOfficialSpotifyBox.IsChecked = settings.UseOfficialSpotifyApi;
         LoadSpotifyCredentials();
@@ -189,6 +190,7 @@ public partial class SettingsWindow : Window
         _settings.YtDlpArgs = string.IsNullOrWhiteSpace(YtDlpArgsBox.Text) ? null : YtDlpArgsBox.Text.Trim();
         _settings.EmbedLyrics = EmbedLyricsBox.IsChecked == true;
         _settings.NormalizeLoudness = NormalizeLoudnessBox.IsChecked == true;
+        _settings.VerifyDownloads = VerifyDownloadsBox.IsChecked == true;
         _settings.AutoUpdateCheck = AutoUpdateCheckBox.IsChecked == true;
         DialogResult = true;
     }

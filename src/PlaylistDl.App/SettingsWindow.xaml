@@ -118,6 +118,10 @@
                   Foreground="White" Margin="0,10,0,0" />
         <TextBlock Text="Applies an EBU R128 loudness filter while converting. This re-encodes M4A and Opus instead of copying the source stream, so those downloads take longer."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+        <CheckBox x:Name="VerifyDownloadsBox" Content="Check every saved file before marking a track done"
+                  Foreground="White" Margin="0,14,0,0" IsChecked="True" />
+        <TextBlock Text="Rejects a download that is empty, does not decode, or is clearly the wrong length, so a broken file is retried or recovered from another source instead of being reported as complete."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
         <TextBlock Text="Fetches lyrics from public providers and stores them in audio tags."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
         <CheckBox x:Name="AutoUpdateCheckBox" Content="Check for updates on startup (once a day)" Foreground="White" Margin="0,12,0,8" />
