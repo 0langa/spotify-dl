@@ -39,6 +39,7 @@ UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PAT
 - Failure banner with actionable guidance plus built-in network diagnosis that reveals antivirus/firewall per-app blocks
 - Optional download pacing, loudness normalization to -14 LUFS, and advanced yt-dlp argument passthrough
 - Job library with restart-safe resume, per-source progress history, per-job queue report, and one-click playlist Sync that downloads only new or unfinished tracks
+- Scheduled auto-sync: sources marked Keep in sync are checked on a chosen interval, and new tracks are downloaded through the queue when it is free
 - Library health check that compares saved jobs against the files on disk, relocates files that were moved under the output folder, and reopens tracks whose file is gone so they can be downloaded again
 - Output formats: MP3 (V0 default, 320 kbps option), M4A, Opus, FLAC, OGG, WAV; Windows-compatible tags, cover art, and optional embedded lyrics
 - Configurable source folders and filename layouts, including album/track folder organization and automatic collision-safe suffixes
@@ -88,6 +89,11 @@ Minimal JSON:
 - A queued job keeps the selection it was queued with, except that a track the repair reopened is taken back into it: the job had skipped that track as already downloaded. A repair never adds a track the job did not contain, and the job follows the saved job to a new output folder only when its own folder is gone.
 - When the output folder cannot be read in full — including a folder behind a junction or symlink, which is never followed — the check reports what it saw, relocates nothing, and does not offer to reopen tracks, because an unread file is indistinguishable from a deleted one. A folder that is not available at all (unplugged drive, offline share, renamed parent) is reported as unavailable rather than as deleted files.
 - Paths are compared in canonical form, which does not resolve junctions and symlinks. The check does not descend into them either, so a file that only exists under a linked folder is never seen and never adopted.
+- Auto-sync runs only while Playlist DL is open. It is skipped while a download, another source operation, or one of the app's own windows is in the way, and resumes at the next check, so an interval is a lower bound on how often a source is checked, not a promise.
+- Auto-sync starts a run only when the queue was empty and neither the track list nor the source box holds anything you put there. Otherwise it queues the sources and leaves starting to you, so it never starts work you staged and never replaces what you are looking at.
+- An imported manifest is never synced on its own, and neither is a free-text search or a job whose output folder is not available.
+- An auto-sync run uses the settings that were in force when the check was queued, like every other queued job, not the settings in force when it finally runs.
+- The library shows when a source was last queued for a check. A check that was queued while the queue was busy runs when you start the queue.
 - The library check assumes one running copy of the app. A second instance started against the same library does not learn about a repair the first one made and can write its own view back.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
 - Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.
@@ -97,7 +103,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.5.0
+./scripts/build-release.ps1 -Version 2.6.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1

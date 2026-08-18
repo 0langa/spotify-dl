@@ -42,6 +42,9 @@ public sealed class AppSettings
 
     public bool AutoUpdateCheck { get; set; } = true;
 
+    /// <summary>How often sources marked "keep in sync" are checked; 0 turns it off.</summary>
+    public int AutoSyncMinutes { get; set; }
+
     /// <summary>Use the official Spotify Web API with credentials from Credential Manager.</summary>
     /// <remarks>Only this flag is stored here; the credentials never enter this file.</remarks>
     public bool UseOfficialSpotifyApi { get; set; }

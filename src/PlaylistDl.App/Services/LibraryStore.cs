@@ -153,6 +153,124 @@ public sealed class LibraryStore
         File.Move(temporaryPath, path, overwrite: true);
     }
 
+    /// <summary>
+    /// Saves progress from the download grid without losing the per-source preferences
+    /// the grid never carries.
+    /// </summary>
+    /// <remarks>
+    /// The grid snapshot is built from the track list alone, so writing it as-is would
+    /// clear "keep in sync" and its last check on every checkpoint.
+    /// </remarks>
+    public void SaveProgress(SavedJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (Load(job.SourceUrl) is { } stored)
+        {
+            job.AutoSync = stored.AutoSync;
+            job.LastAutoSyncUtc = stored.LastAutoSyncUtc;
+        }
+        else if (File.Exists(PathFor(job.SourceUrl)))
+        {
+            // The entry is there but could not be deserialized. Progress is still worth
+            // saving, but the preferences are read straight out of the text first, so a
+            // reader that trips over one bad field does not silently switch auto-sync off.
+            ReadAutoSyncPreferences(PathFor(job.SourceUrl), job);
+        }
+
+        Save(job);
+    }
+
+    private static void ReadAutoSyncPreferences(string path, SavedJob job)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            if (document.RootElement.TryGetProperty("autoSync", out var autoSync) &&
+                autoSync.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                job.AutoSync = autoSync.GetBoolean();
+            }
+
+            if (document.RootElement.TryGetProperty("lastAutoSyncUtc", out var lastCheck) &&
+                lastCheck.ValueKind == JsonValueKind.String &&
+                lastCheck.TryGetDateTimeOffset(out var when))
+            {
+                job.LastAutoSyncUtc = when;
+            }
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // Nothing readable to keep; the save below still preserves the download work.
+        }
+    }
+
+    /// <summary>
+    /// Stamps when auto-sync last looked at a source, without touching anything else.
+    /// </summary>
+    /// <remarks>
+    /// UpdatedAt is deliberately left alone: an unattended check is not a change to the
+    /// job, and bumping it would reorder the library list and claim work that never
+    /// happened.
+    /// </remarks>
+    /// <returns>False when there was no entry to stamp, or it could not be written.</returns>
+    public bool RecordAutoSyncCheck(string sourceUrl, DateTimeOffset when) =>
+        WriteField(sourceUrl, job => job.LastAutoSyncUtc = when);
+
+    /// <summary>Turns unattended syncing on or off for one source.</summary>
+    /// <remarks>
+    /// Like the check stamp, this leaves UpdatedAt alone: a preference is not work on the
+    /// job, and bumping it would reorder the library list and claim a fresh download.
+    /// </remarks>
+    /// <returns>False when there was no entry to change, or it could not be written.</returns>
+    public bool SetAutoSync(string sourceUrl, bool autoSync) =>
+        WriteField(sourceUrl, job => job.AutoSync = autoSync);
+
+    private bool WriteField(string sourceUrl, Action<SavedJob> change)
+    {
+        var job = Load(sourceUrl);
+        if (job is null)
+        {
+            return false;
+        }
+
+        change(job);
+        var path = PathFor(sourceUrl);
+        var temporaryPath = path + ".tmp";
+        try
+        {
+            // The same write-and-swap Save uses: this is the app's only unattended,
+            // repeating write, so a torn one must not be able to destroy the entry.
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(job, _jsonOptions));
+            File.Move(temporaryPath, path, overwrite: true);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            Discard(temporaryPath);
+            return false;
+        }
+    }
+
+    private static void Discard(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // Nothing else to try; the entry itself is untouched either way.
+        }
+    }
+
     public void Delete(string sourceUrl)
     {
         var path = PathFor(sourceUrl);

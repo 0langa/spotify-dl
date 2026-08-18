@@ -27,6 +27,7 @@ public partial class SettingsWindow : Window
         SelectByTag(DuplicatePolicyBox, settings.DuplicatePolicy);
         CreateSourceFolderBox.IsChecked = settings.CreateSourceFolder;
         SelectByTag(ThrottleBox, settings.ThrottleSeconds.ToString());
+        SelectByTag(AutoSyncBox, settings.AutoSyncMinutes.ToString());
         YtDlpArgsBox.Text = settings.YtDlpArgs ?? string.Empty;
         EmbedLyricsBox.IsChecked = settings.EmbedLyrics;
         NormalizeLoudnessBox.IsChecked = settings.NormalizeLoudness;
@@ -187,6 +188,7 @@ public partial class SettingsWindow : Window
         _settings.DuplicatePolicy = ((ComboBoxItem)DuplicatePolicyBox.SelectedItem).Tag?.ToString()
             ?? "download";
         _settings.ThrottleSeconds = int.Parse(((ComboBoxItem)ThrottleBox.SelectedItem).Tag?.ToString() ?? "0");
+        _settings.AutoSyncMinutes = int.Parse(((ComboBoxItem)AutoSyncBox.SelectedItem).Tag?.ToString() ?? "0");
         _settings.YtDlpArgs = string.IsNullOrWhiteSpace(YtDlpArgsBox.Text) ? null : YtDlpArgsBox.Text.Trim();
         _settings.EmbedLyrics = EmbedLyricsBox.IsChecked == true;
         _settings.NormalizeLoudness = NormalizeLoudnessBox.IsChecked == true;

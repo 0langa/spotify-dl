@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
 using PlaylistDl.App.Services;
@@ -20,10 +21,18 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
             "search" => "Search",
             _ => "Playlist",
         };
+        var subtitle = $"{typeLabel} · {job.SourceUrl}";
+        if (job.AutoSync)
+        {
+            subtitle += job.LastAutoSyncUtc is { } checkedAt
+                ? $" · keeps in sync, last queued for a check {checkedAt.LocalDateTime:g}"
+                : " · keeps in sync";
+        }
+
         return new LibraryEntry(
             job,
             string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
-            $"{typeLabel} · {job.SourceUrl}",
+            subtitle,
             $"{done}/{job.Tracks.Count} done",
             job.UpdatedAt.LocalDateTime.ToString("g"));
     }
@@ -32,16 +41,19 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
 public partial class LibraryWindow : Window
 {
     private readonly LibraryStore _library;
+    private readonly int _autoSyncMinutes;
     private readonly HashSet<string> _repaired = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _deleted = new(StringComparer.OrdinalIgnoreCase);
     private bool _checking;
     private bool _closed;
     private bool _repairing;
     private bool _closeRequested;
 
-    public LibraryWindow(LibraryStore library)
+    public LibraryWindow(LibraryStore library, int autoSyncMinutes = 0)
     {
         InitializeComponent();
         _library = library;
+        _autoSyncMinutes = autoSyncMinutes;
         Reload();
     }
 
@@ -52,6 +64,9 @@ public partial class LibraryWindow : Window
 
     /// <summary>Sources whose library entry this window changed, for the caller to refresh.</summary>
     public IReadOnlyCollection<string> RepairedSources => _repaired;
+
+    /// <summary>Sources this window removed, so their queued work can be dropped too.</summary>
+    public IReadOnlyCollection<string> DeletedSources => _deleted;
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
@@ -88,6 +103,69 @@ public partial class LibraryWindow : Window
     private void SyncButton_Click(object sender, RoutedEventArgs e) => Choose(sync: true);
 
     private void JobsList_MouseDoubleClick(object sender, RoutedEventArgs e) => Choose(sync: false);
+
+    private void JobsList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        ShowAutoSyncState();
+
+    /// <summary>Mirrors the selected job's auto-sync flag onto the toggle.</summary>
+    private void ShowAutoSyncState()
+    {
+        AutoSyncToggle.IsEnabled = Selected is not null && !_checking;
+        AutoSyncToggle.IsChecked = Selected?.Job.AutoSync == true;
+    }
+
+    /// <summary>Turns unattended syncing on or off for the selected source.</summary>
+    private void AutoSyncToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (Selected is null || _checking)
+        {
+            ShowAutoSyncState();
+            return;
+        }
+
+        var entry = Selected;
+        var wanted = AutoSyncToggle.IsChecked == true;
+        if (wanted && !AutoSyncScheduler.CanAutoSync(entry.Job))
+        {
+            AutoSyncToggle.IsChecked = false;
+            HealthPanel.Visibility = Visibility.Visible;
+            HealthText.Text = string.Equals(
+                entry.Job.SourceType, "import", StringComparison.OrdinalIgnoreCase)
+                ? $"{entry.Name}: an imported manifest cannot be synced on its own, " +
+                    "because its source is a file on this machine."
+                : string.Equals(
+                    entry.Job.SourceType, "search", StringComparison.OrdinalIgnoreCase)
+                    ? $"{entry.Name}: a search cannot be synced on its own, because running " +
+                        "it again returns whatever ranks highest that day rather than what " +
+                        "you picked."
+                    : $"{entry.Name}: its output folder is not available, so it cannot be " +
+                        "synced on its own.";
+            return;
+        }
+
+        // Written on the entry as it is on disk, and without touching anything else on it:
+        // this window may have been open for a while, and only this one field is changing.
+        if (!_library.SetAutoSync(entry.Job.SourceUrl, wanted))
+        {
+            AutoSyncToggle.IsChecked = entry.Job.AutoSync;
+            HealthPanel.Visibility = Visibility.Visible;
+            HealthText.Text = $"{entry.Name}: the saved job could not be written, so " +
+                "nothing was changed.";
+            return;
+        }
+
+        entry.Job.AutoSync = wanted;
+
+        RefreshKeepingSelection();
+        HealthPanel.Visibility = Visibility.Visible;
+        HealthText.Text = wanted
+            ? _autoSyncMinutes > 0
+                ? $"{entry.Name}: checked for new tracks every " +
+                    $"{IntervalText(_autoSyncMinutes)} while the app is open."
+                : $"{entry.Name}: marked to keep in sync. Auto-sync is off in Settings, " +
+                    "so nothing is checked until an interval is chosen there."
+            : $"{entry.Name}: no longer checked on its own.";
+    }
 
     private void Choose(bool sync)
     {
@@ -203,6 +281,7 @@ public partial class LibraryWindow : Window
 
     private void SetButtonsEnabled(bool enabled)
     {
+        AutoSyncToggle.IsEnabled = enabled && Selected is not null;
         CheckFilesButton.IsEnabled = enabled;
         CheckAllButton.IsEnabled = enabled;
         DeleteButton.IsEnabled = enabled;
@@ -221,6 +300,8 @@ public partial class LibraryWindow : Window
                 .OfType<LibraryEntry>()
                 .FirstOrDefault(item => item.Job.SourceUrl == selected);
         }
+
+        ShowAutoSyncState();
     }
 
     /// <summary>
@@ -413,6 +494,15 @@ public partial class LibraryWindow : Window
         }
     }
 
+    private static string IntervalText(int minutes) => minutes switch
+    {
+        < 60 => $"{minutes} minutes",
+        60 => "hour",
+        < 1440 => $"{minutes / 60} hours",
+        1440 => "day",
+        _ => $"{minutes / 1440} days",
+    };
+
     private void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
         if (Selected is null || _checking)
@@ -428,6 +518,7 @@ public partial class LibraryWindow : Window
             MessageBoxImage.Question);
         if (confirmed == MessageBoxResult.Yes)
         {
+            _deleted.Add(Selected.Job.SourceUrl);
             _library.Delete(Selected.Job.SourceUrl);
             Reload();
         }

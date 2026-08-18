@@ -95,6 +95,17 @@
         <TextBlock Text="Matched against completed tracks in the job library. Hard links need the same drive and fall back to a copy."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
 
+        <TextBlock Text="Keep sources in sync" FontWeight="SemiBold" Margin="0,20,0,0" />
+        <ComboBox x:Name="AutoSyncBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
+          <ComboBoxItem Tag="0">Off (default)</ComboBoxItem>
+          <ComboBoxItem Tag="30">Every 30 minutes</ComboBoxItem>
+          <ComboBoxItem Tag="60">Every hour</ComboBoxItem>
+          <ComboBoxItem Tag="360">Every 6 hours</ComboBoxItem>
+          <ComboBoxItem Tag="1440">Once a day</ComboBoxItem>
+        </ComboBox>
+        <TextBlock Text="Sources you mark with Keep in sync in the library are checked for new tracks on this interval and queued. The check runs only while Playlist DL is open, and never while a download, another source operation, or one of the app's windows is in the way. It starts the queue itself only when the queue was empty and the window is free; otherwise the sources wait for you to start the queue."
+                   Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
+
         <TextBlock Text="Download pacing" FontWeight="SemiBold" Margin="0,20,0,0" />
         <ComboBox x:Name="ThrottleBox" Margin="0,7,0,0" Height="36" SelectedIndex="0">
           <ComboBoxItem Tag="0">No delay between batches (default)</ComboBoxItem>

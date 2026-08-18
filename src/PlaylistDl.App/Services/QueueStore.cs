@@ -19,6 +19,9 @@ public sealed class QueuedJobRecord
         new("mp3", "0", 2, null, true, "position_artist_title", true, 0, null, false);
 
     public List<SavedTrack> Tracks { get; set; } = [];
+
+    /// <summary>An auto-sync job decides its track list when it runs.</summary>
+    public bool ResolveSelection { get; set; }
 }
 
 /// <summary>Keeps the pending queue across restarts so queued work is never lost silently.</summary>
@@ -61,7 +64,7 @@ public sealed class QueueStore
             return document.Jobs
                 .Where(record => !string.IsNullOrWhiteSpace(record.SourceUrl))
                 .Select(ToJob)
-                .Where(job => job.SelectedCount > 0)
+                .Where(job => job.ResolveSelection || job.SelectedCount > 0)
                 .ToList();
         }
         catch (Exception exception) when (
@@ -95,6 +98,7 @@ public sealed class QueueStore
         OutputDirectory = job.OutputDirectory,
         Settings = job.Settings,
         Tracks = job.Snapshot.Tracks,
+        ResolveSelection = job.ResolveSelection,
     };
 
     private static QueuedJob ToJob(QueuedJobRecord record) => new(
@@ -110,7 +114,10 @@ public sealed class QueueStore
             SourceType = record.SourceType,
             OutputDirectory = record.OutputDirectory,
             Tracks = record.Tracks,
-        });
+        })
+    {
+        ResolveSelection = record.ResolveSelection,
+    };
 
     private sealed class QueueDocument
     {

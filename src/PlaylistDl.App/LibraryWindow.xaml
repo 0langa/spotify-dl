@@ -18,6 +18,7 @@
     </StackPanel>
     <ListBox Grid.Row="1" x:Name="JobsList" Background="#181B22" Foreground="#E7EBF2"
              BorderBrush="#303642" HorizontalContentAlignment="Stretch"
+             SelectionChanged="JobsList_SelectionChanged"
              MouseDoubleClick="JobsList_MouseDoubleClick"
              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
       <ListBox.ItemTemplate>
@@ -48,6 +49,9 @@
       <Button DockPanel.Dock="Left" x:Name="CheckAllButton" Content="Check all" Width="90"
               Margin="10,0,0,0" Click="CheckAllButton_Click"
               ToolTip="Check every saved job against the files on disk" />
+      <ToggleButton DockPanel.Dock="Left" x:Name="AutoSyncToggle" Content="Keep in sync" Width="110"
+                    Margin="10,0,0,0" Click="AutoSyncToggle_Click" IsEnabled="False"
+                    ToolTip="Check this source for new tracks on its own, on the interval set in Settings" />
       <Button DockPanel.Dock="Right" x:Name="OpenButton" Content="Open" Width="90" Background="#4F7DFF" Foreground="White"
               Click="OpenButton_Click" ToolTip="Restore this job exactly as last saved" />
       <Button DockPanel.Dock="Right" x:Name="SyncButton" Content="Sync" Width="90" Margin="0,0,10,0" Click="SyncButton_Click"

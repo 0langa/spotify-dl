@@ -167,6 +167,52 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void RemoveSourceDropsEveryPendingJobForThatSource()
+    {
+        var queue = new DownloadQueue();
+        var repeated = Job("first");
+        queue.Enqueue(repeated);
+        queue.Enqueue(Job("second"));
+        // The same source can be queued twice, e.g. by hand and then by auto-sync.
+        queue.Enqueue(repeated with { Name = "first again" });
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+
+        Assert.Equal(2, queue.RemoveSource(repeated.SourceUrl.ToUpperInvariant()));
+        Assert.Equal(1, changes);
+        Assert.Equal(["second"], queue.PendingNames());
+        // Nothing to remove must not raise a change.
+        Assert.Equal(0, queue.RemoveSource(repeated.SourceUrl));
+        Assert.Equal(1, changes);
+    }
+
+    [Fact]
+    public void ReplaceKeepsAnAutoSyncJobButDropsAFinishedOne()
+    {
+        var queue = new DownloadQueue();
+        var autoSync = Job("kept in sync", new TrackItem { Id = "a", Status = "Done" }) with
+        {
+            ResolveSelection = true,
+            PlaylistId = null,
+            AllTracks = [],
+            Tracks = [],
+        };
+        var finished = Job("finished", new TrackItem { Id = "b", Status = "Done" }) with
+        {
+            PlaylistId = null,
+            AllTracks = [],
+            Tracks = [],
+        };
+        Assert.Equal(0, autoSync.SelectedCount);
+        Assert.Equal(0, finished.SelectedCount);
+
+        queue.Replace([autoSync, finished]);
+
+        // The auto-sync job decides its tracks when it runs, so it must survive the filter.
+        Assert.Equal(["kept in sync"], queue.PendingNames());
+    }
+
+    [Fact]
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();

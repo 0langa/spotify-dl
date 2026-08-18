@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
 using PlaylistDl.App.Services;
@@ -40,6 +41,35 @@ public partial class MainWindow : Window
     private readonly List<TrackItem> _failedTracks = [];
     private readonly DownloadQueue _queue = new();
     private bool _queueRunning;
+
+    /// <summary>Checks once a minute whether a source marked "keep in sync" is due.</summary>
+    private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
+
+    /// <summary>True when the track list on screen is one auto-sync put there.</summary>
+    /// <remarks>
+    /// The flag has to outlive the run itself, because the queue call returns as soon as
+    /// the backend accepts the job while the resume-point guard is still needed. What the
+    /// run wrote into the two boxes is remembered with it: anything else in them was put
+    /// there by the user, and then the window is theirs again.
+    /// </remarks>
+    private bool _autoSyncOwnsGrid;
+    private string? _autoSyncSourceUrl;
+    private string? _autoSyncOutputDirectory;
+
+    private bool _autoSyncTickBusy;
+
+    /// <summary>Sources of the current run that turned out to have nothing new.</summary>
+    private int _queueUpToDate;
+
+    /// <summary>
+    /// How many modal loops of this window are open that WPF does not count for us.
+    /// </summary>
+    /// <remarks>
+    /// A message box and the shell file and folder pickers are Win32 modal loops: they keep
+    /// pumping the auto-sync timer and never appear in <see cref="Window.OwnedWindows"/>,
+    /// and ComponentDispatcher.IsThreadModal does not see them either.
+    /// </remarks>
+    private int _modalDepth;
     private QueuedJob? _activeQueuedJob;
     private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
@@ -115,6 +145,8 @@ public partial class MainWindow : Window
         }
         Closing += MainWindow_Closing;
         Loaded += async (_, _) => await AutoCheckForUpdatesAsync();
+        _autoSyncTimer.Tick += (_, _) => AutoSyncTick();
+        _autoSyncTimer.Start();
     }
 
     /// <summary>Stops the backend before the window really closes.</summary>
@@ -139,6 +171,7 @@ public partial class MainWindow : Window
         }
 
         _shuttingDown = true;
+        _autoSyncTimer.Stop();
         // No further input while the session is being torn down: a click here would
         // otherwise relaunch the backend that was just stopped.
         IsEnabled = false;
@@ -240,6 +273,14 @@ public partial class MainWindow : Window
 
     private void Track_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // Only what the user can change takes the list back from an unattended run. The
+        // run writes Progress, Status, OutputPath, and ErrorText on its own rows, so
+        // clearing on those would end its ownership with the first downloaded track.
+        if (e.PropertyName is nameof(TrackItem.IsSelected) or nameof(TrackItem.SourceOverride))
+        {
+            _autoSyncOwnsGrid = false;
+        }
+
         if (e.PropertyName == nameof(TrackItem.IsSelected) && !_bulkSelectionUpdate)
         {
             UpdateSelectionUi();
@@ -320,6 +361,7 @@ public partial class MainWindow : Window
         {
             if (input.Length == 0 || input.Contains("://", StringComparison.Ordinal))
             {
+                using var modal = EnterModal();
                 MessageBox.Show(
                     this,
                     "Paste a Spotify playlist, album, or track URL — or type an artist and title to search.",
@@ -385,12 +427,14 @@ public partial class MainWindow : Window
 
     private async void DownloadButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         if (!_queue.IsEmpty)
         {
             if (!_queueRunning)
             {
                 // Each run reports on itself; the previous run's report is replaced.
                 _queueReport.Clear();
+                _queueUpToDate = 0;
             }
             await RunQueueAsync();
             return;
@@ -414,6 +458,7 @@ public partial class MainWindow : Window
 
     private void AddToQueueButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         var selectedTracks = Tracks.Where(track => track.IsSelected).ToList();
         if (_playlist is null || selectedTracks.Count == 0)
         {
@@ -447,6 +492,167 @@ public partial class MainWindow : Window
         UpdateQueueUi();
         StatusText.Text = $"Added \"{_playlist.Name}\" to the queue — resolve another source or start the queue";
     }
+
+    /// <summary>
+    /// Queues the sources that are due for an unattended sync, and runs them when the
+    /// queue and the window are free.
+    /// </summary>
+    /// <remarks>
+    /// An auto-sync job is the ordinary queue job with the ordinary sync semantics: the
+    /// source is re-resolved when it runs and only new or unfinished tracks are selected.
+    /// What it must never do is act for the user: it does not start jobs the user staged
+    /// and left alone, and it does not take over a track list the user put on screen. In
+    /// those cases the sources are queued and the user is told, and they start the queue
+    /// themselves.
+    /// </remarks>
+    private async void AutoSyncTick()
+    {
+        if (!CanAutoSyncNow() || _autoSyncTickBusy)
+        {
+            return;
+        }
+
+        _autoSyncTickBusy = true;
+        try
+        {
+            var busy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var queued in _queue.Items)
+            {
+                busy.Add(queued.SourceUrl);
+            }
+            if (!OwnsWindow() && _playlist?.SourceUrl is { Length: > 0 } loaded)
+            {
+                // The grid owns that source; syncing it in the background would fight the
+                // user. A grid the last unattended run left behind is not theirs, and
+                // parking its own source there would check it exactly once per session.
+                busy.Add(loaded);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var interval = TimeSpan.FromMinutes(_settings.AutoSyncMinutes);
+            // Reading and deserializing the whole library does not belong on the UI thread.
+            var due = await Task.Run(() => AutoSyncScheduler.Due(_library.List(), interval, now, busy));
+
+            // Everything above ran off the dispatcher, so the gate is checked again.
+            if (due.Count == 0 || !CanAutoSyncNow())
+            {
+                return;
+            }
+
+            // The queue and the loaded source may have changed while the library was read.
+            busy.Clear();
+            foreach (var queued in _queue.Items)
+            {
+                busy.Add(queued.SourceUrl);
+            }
+            if (!OwnsWindow() && _playlist?.SourceUrl is { Length: > 0 } current)
+            {
+                busy.Add(current);
+            }
+
+            var queueWasEmpty = _queue.IsEmpty;
+            var added = 0;
+            foreach (var job in due)
+            {
+                if (busy.Contains(job.SourceUrl))
+                {
+                    continue;
+                }
+
+                // Stamped and queued in one step, with nothing awaited in between: a stamp
+                // without a queued job would park the source for a whole interval, and a
+                // gap here would let a run the user starts absorb the jobs.
+                if (!AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now))
+                {
+                    continue;
+                }
+
+                _queue.Enqueue(new QueuedJob(
+                    string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
+                    job.SourceUrl,
+                    job.SourceType,
+                    job.OutputDirectory,
+                    QueuedJobSettings.From(_settings),
+                    job)
+                {
+                    ResolveSelection = true,
+                });
+                added++;
+            }
+
+            if (added == 0)
+            {
+                return;
+            }
+
+            UpdateQueueUi();
+            var sources = added == 1 ? "1 source" : $"{added} sources";
+            // A run replaces the URL box, the output folder, and the grid, so it may only
+            // start when none of them holds something the user put there.
+            var gridIsFree = OwnsWindow() ||
+                (_playlist is null && string.IsNullOrWhiteSpace(PlaylistUrlBox.Text));
+            if (!queueWasEmpty || !gridIsFree || !CanAutoSyncNow())
+            {
+                // Starting here would also start the jobs the user staged, or replace what
+                // they have on screen. Both are theirs to start.
+                StatusText.Text = queueWasEmpty
+                    ? $"Auto-sync queued {sources} — start the queue when you are ready"
+                    : $"Auto-sync added {sources} to the queue — start the queue when you are ready";
+                return;
+            }
+
+            // Each run reports on itself; the previous run's report is replaced.
+            _queueReport.Clear();
+            _queueUpToDate = 0;
+            _autoSyncOwnsGrid = true;
+            StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
+            await RunQueueAsync();
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // An unreadable library must not take the app down from a timer.
+        }
+        finally
+        {
+            _autoSyncTickBusy = false;
+        }
+    }
+
+    /// <summary>Whether the window still holds exactly what the last unattended run put there.</summary>
+    private bool OwnsWindow() =>
+        _autoSyncOwnsGrid &&
+        string.Equals(PlaylistUrlBox.Text, _autoSyncSourceUrl, StringComparison.Ordinal) &&
+        string.Equals(OutputDirectoryBox.Text, _autoSyncOutputDirectory, StringComparison.Ordinal);
+
+    /// <summary>Marks a Win32 modal loop as open for as long as it is used.</summary>
+    private IDisposable EnterModal()
+    {
+        _modalDepth++;
+        return new ModalScope(this);
+    }
+
+    private sealed class ModalScope(MainWindow window) : IDisposable
+    {
+        public void Dispose() => window._modalDepth--;
+    }
+
+    /// <summary>
+    /// Whether an unattended check may run at this moment.
+    /// </summary>
+    /// <remarks>
+    /// The app's own windows are excluded because Settings, Library, and Queue all act on
+    /// the state a run would change under them, and neither a WPF dialog nor a Win32 modal
+    /// loop stops this timer.
+    /// </remarks>
+    private bool CanAutoSyncNow() =>
+        _settings.AutoSyncMinutes > 0 &&
+        !_jobRunning &&
+        !_queueRunning &&
+        !_shuttingDown &&
+        _sourceOperationCts is null &&
+        OwnedWindows.Count == 0 &&
+        _modalDepth == 0;
 
     private void UpdateQueueUi()
     {
@@ -622,6 +828,14 @@ public partial class MainWindow : Window
                 prepared = await PrepareQueuedJobAsync(job);
                 break;
             }
+            catch (NothingToDownloadException) when (job.ResolveSelection)
+            {
+                // An auto-sync check that found nothing new: the quiet outcome, not a
+                // failure, so it is neither reported nor counted against the retry limit.
+                _activeQueuedJob = null;
+                _queueUpToDate++;
+                continue;
+            }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 // One unresolvable source must not discard the jobs behind it.
@@ -654,6 +868,11 @@ public partial class MainWindow : Window
         };
         PlaylistUrlBox.Text = prepared.SourceUrl;
         OutputDirectoryBox.Text = prepared.OutputDirectory;
+        if (_autoSyncOwnsGrid)
+        {
+            _autoSyncSourceUrl = PlaylistUrlBox.Text;
+            _autoSyncOutputDirectory = OutputDirectoryBox.Text;
+        }
         SetTracks(prepared.AllTracks);
         PlaylistTitle.Text = prepared.Name;
         _tracksView.Refresh();
@@ -704,7 +923,7 @@ public partial class MainWindow : Window
         var selected = restored.Where(track => track.IsSelected).ToList();
         if (selected.Count == 0)
         {
-            throw new InvalidOperationException(
+            throw new NothingToDownloadException(
                 $"Every track of \"{job.Name}\" is already downloaded.");
         }
 
@@ -728,13 +947,23 @@ public partial class MainWindow : Window
         }
         UpdateQueueUi();
         PersistQueue();
+        var upToDate = _queueUpToDate == 1
+            ? "1 source was already up to date"
+            : $"{_queueUpToDate} sources were already up to date";
         if (_queueReport.Count > 0)
         {
             var saved = _queueReport.Sum(summary => summary.Succeeded);
             var failed = _queueReport.Sum(summary => summary.Failed);
             StatusText.Text =
-                $"Queue finished — {_queueReport.Count} jobs, {saved} saved, {failed} failed. " +
-                "Open Queue for the per-job report.";
+                $"Queue finished — {_queueReport.Count} jobs, {saved} saved, {failed} failed" +
+                (_queueUpToDate > 0 ? $", {upToDate}" : string.Empty) +
+                ". Open Queue for the per-job report.";
+        }
+        else if (_queueUpToDate > 0)
+        {
+            // Every job was a check that found nothing, so nothing else writes a line and
+            // the status would be left on "preparing".
+            StatusText.Text = $"Queue finished — {upToDate}";
         }
     }
 
@@ -833,6 +1062,9 @@ public partial class MainWindow : Window
 
     private async void CancelButton_Click(object sender, RoutedEventArgs e)
     {
+        // Cancelling is the user driving the window: what an unattended run left on screen
+        // is theirs from here, so it is neither replaced nor restarted for them.
+        _autoSyncOwnsGrid = false;
         try
         {
             if (_sourceOperationCts is not null)
@@ -864,6 +1096,7 @@ public partial class MainWindow : Window
 
     private void ChooseFolderButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         var initialDirectory = FolderPickerPath.ResolveInitialDirectory(OutputDirectoryBox.Text);
         var attempts = initialDirectory is null ? new string?[] { null } : new string?[] { initialDirectory, null };
 
@@ -1336,6 +1569,7 @@ public partial class MainWindow : Window
 
     private async void DiagnoseButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         DiagnoseButton.IsEnabled = false;
         StatusText.Text = "Running network diagnosis…";
         try
@@ -1380,6 +1614,7 @@ public partial class MainWindow : Window
 
     private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         if (_failedTracks.Count == 0)
         {
             return;
@@ -1442,6 +1677,8 @@ public partial class MainWindow : Window
 
     private CancellationTokenSource? BeginSourceOperation(string status)
     {
+        // Whatever the user is loading now is theirs, not auto-sync's.
+        _autoSyncOwnsGrid = false;
         if (_sourceOperationCts is not null)
         {
             // A second source request would leave the first one's result to overwrite
@@ -1596,8 +1833,15 @@ public partial class MainWindow : Window
 
     private async void LibraryButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new LibraryWindow(_library) { Owner = this };
+        var dialog = new LibraryWindow(_library, _settings.AutoSyncMinutes) { Owner = this };
         var opened = dialog.ShowDialog() == true && dialog.SelectedJob is not null;
+        foreach (var deleted in dialog.DeletedSources)
+        {
+            // A queued job would write the entry back when it runs.
+            _queue.RemoveSource(deleted);
+        }
+
+        UpdateQueueUi();
         ReconcileRepairedJobs(dialog.RepairedSources);
         if (opened)
         {
@@ -1666,6 +1910,8 @@ public partial class MainWindow : Window
     /// <summary>Brings the loaded track list in line with a repaired library entry.</summary>
     private void ApplyRepairedTracks(SavedJob repaired)
     {
+        // A repair the user asked for rewrites these rows, so the window is theirs again.
+        _autoSyncOwnsGrid = false;
         var byKey = new Dictionary<string, SavedTrack>(StringComparer.Ordinal);
         foreach (var track in repaired.Tracks)
         {
@@ -1814,8 +2060,16 @@ public partial class MainWindow : Window
         _savedJob = snapshot;
         try
         {
+            _library.SaveProgress(_savedJob);
+            if (_autoSyncOwnsGrid)
+            {
+                // Resume is the user's own last job, and an unattended run must not take it
+                // over. The flag outlives the run: it is cleared when the user next drives
+                // the window, and only the backend's start request is awaited here.
+                return;
+            }
+
             _jobStore.Save(_savedJob);
-            _library.Save(_savedJob);
             ResumeButton.Visibility = Visibility.Visible;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -1826,6 +2080,7 @@ public partial class MainWindow : Window
 
     private async void ImportManifestButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         var dialog = new OpenFileDialog
         {
             Title = "Import track manifest",
