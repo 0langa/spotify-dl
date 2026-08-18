@@ -25,7 +25,7 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
         if (job.AutoSync)
         {
             subtitle += job.LastAutoSyncUtc is { } checkedAt
-                ? $" · keeps in sync, last checked {checkedAt.LocalDateTime:g}"
+                ? $" · keeps in sync, last queued for a check {checkedAt.LocalDateTime:g}"
                 : " · keeps in sync";
         }
 
@@ -142,7 +142,15 @@ public partial class LibraryWindow : Window
         {
             // Written on the entry as it is on disk: this window may have been open for a
             // while, and only this one field is being changed.
-            var job = _library.Load(entry.Job.SourceUrl) ?? entry.Job;
+            if (_library.Load(entry.Job.SourceUrl) is not { } job)
+            {
+                AutoSyncToggle.IsChecked = entry.Job.AutoSync;
+                HealthPanel.Visibility = Visibility.Visible;
+                HealthText.Text = $"{entry.Name}: the saved job could not be read, so " +
+                    "nothing was changed.";
+                return;
+            }
+
             job.AutoSync = wanted;
             _library.Save(job);
             entry.Job.AutoSync = wanted;
@@ -156,6 +164,7 @@ public partial class LibraryWindow : Window
             return;
         }
 
+        RefreshKeepingSelection();
         HealthPanel.Visibility = Visibility.Visible;
         HealthText.Text = wanted
             ? _autoSyncMinutes > 0

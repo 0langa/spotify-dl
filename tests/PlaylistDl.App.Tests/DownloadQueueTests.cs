@@ -170,17 +170,19 @@ public sealed class DownloadQueueTests
     public void RemoveSourceDropsEveryPendingJobForThatSource()
     {
         var queue = new DownloadQueue();
-        queue.Enqueue(Job("first"));
+        var repeated = Job("first");
+        queue.Enqueue(repeated);
         queue.Enqueue(Job("second"));
-        var url = queue.Items[0].SourceUrl;
+        // The same source can be queued twice, e.g. by hand and then by auto-sync.
+        queue.Enqueue(repeated with { Name = "first again" });
         var changes = 0;
         queue.Changed += (_, _) => changes++;
 
-        Assert.Equal(1, queue.RemoveSource(url.ToUpperInvariant()));
+        Assert.Equal(2, queue.RemoveSource(repeated.SourceUrl.ToUpperInvariant()));
         Assert.Equal(1, changes);
         Assert.Equal(["second"], queue.PendingNames());
         // Nothing to remove must not raise a change.
-        Assert.Equal(0, queue.RemoveSource(url));
+        Assert.Equal(0, queue.RemoveSource(repeated.SourceUrl));
         Assert.Equal(1, changes);
     }
 

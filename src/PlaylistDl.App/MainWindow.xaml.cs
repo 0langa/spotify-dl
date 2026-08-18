@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
@@ -44,9 +45,6 @@ public partial class MainWindow : Window
 
     /// <summary>Checks once a minute whether a source marked "keep in sync" is due.</summary>
     private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
-
-    /// <summary>True while a run auto-sync started is going, so it stays out of the way.</summary>
-    private bool _autoSyncRunning;
 
     /// <summary>True when the track list on screen is one auto-sync put there.</summary>
     private bool _autoSyncOwnsGrid;
@@ -400,6 +398,7 @@ public partial class MainWindow : Window
 
     private async void DownloadButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         if (!_queue.IsEmpty)
         {
             if (!_queueRunning)
@@ -508,17 +507,20 @@ public partial class MainWindow : Window
                 return;
             }
 
+            var stamped = await Task.Run(() =>
+                due.Where(job => AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now))
+                    .ToList());
+
+            // Checked once more: the awaits above let the user start something.
+            if (stamped.Count == 0 || !CanAutoSyncNow())
+            {
+                return;
+            }
+
             var queueWasEmpty = _queue.IsEmpty;
             var added = 0;
-            foreach (var job in due)
+            foreach (var job in stamped)
             {
-                if (!await Task.Run(() => AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now)))
-                {
-                    // Without the stamp the source would be picked again on every tick, and
-                    // a missing entry means the job was deleted while this tick ran.
-                    continue;
-                }
-
                 _queue.Enqueue(new QueuedJob(
                     string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
                     job.SourceUrl,
@@ -532,14 +534,12 @@ public partial class MainWindow : Window
                 added++;
             }
 
-            if (added == 0)
-            {
-                return;
-            }
-
             UpdateQueueUi();
             var sources = added == 1 ? "1 source" : $"{added} sources";
-            var gridIsFree = _playlist is null || _autoSyncOwnsGrid;
+            // A run replaces the URL box, the output folder, and the grid, so it may only
+            // start when none of them holds something the user put there.
+            var gridIsFree = _autoSyncOwnsGrid ||
+                (_playlist is null && string.IsNullOrWhiteSpace(PlaylistUrlBox.Text));
             if (!queueWasEmpty || !gridIsFree || !CanAutoSyncNow())
             {
                 // Starting here would also start the jobs the user staged, or replace what
@@ -552,16 +552,14 @@ public partial class MainWindow : Window
 
             // Each run reports on itself; the previous run's report is replaced.
             _queueReport.Clear();
-            _autoSyncRunning = true;
             _autoSyncOwnsGrid = true;
             StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
-            try
+            await RunQueueAsync();
+            if (!_jobRunning && !_queueRunning && _queueReport.Count == 0)
             {
-                await RunQueueAsync();
-            }
-            finally
-            {
-                _autoSyncRunning = false;
+                // Every source turned out to be up to date, so no job ever started and
+                // nothing else writes a closing line.
+                StatusText.Text = $"Auto-sync checked {sources} — nothing new";
             }
         }
         catch (Exception exception) when (
@@ -588,7 +586,10 @@ public partial class MainWindow : Window
         !_queueRunning &&
         !_shuttingDown &&
         _sourceOperationCts is null &&
-        OwnedWindows.Count == 0;
+        OwnedWindows.Count == 0 &&
+        // A message box and the shell folder picker are Win32 modal loops: they pump this
+        // timer and never show up in OwnedWindows.
+        !ComponentDispatcher.IsThreadModal;
 
     private void UpdateQueueUi()
     {
@@ -764,7 +765,7 @@ public partial class MainWindow : Window
                 prepared = await PrepareQueuedJobAsync(job);
                 break;
             }
-            catch (InvalidOperationException) when (job.ResolveSelection)
+            catch (NothingToDownloadException) when (job.ResolveSelection)
             {
                 // An auto-sync check that found nothing new: the quiet outcome, not a
                 // failure, so it is neither reported nor counted against the retry limit.
@@ -853,7 +854,7 @@ public partial class MainWindow : Window
         var selected = restored.Where(track => track.IsSelected).ToList();
         if (selected.Count == 0)
         {
-            throw new InvalidOperationException(
+            throw new NothingToDownloadException(
                 $"Every track of \"{job.Name}\" is already downloaded.");
         }
 
@@ -1529,6 +1530,7 @@ public partial class MainWindow : Window
 
     private async void RetryFailedButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         if (_failedTracks.Count == 0)
         {
             return;
@@ -1972,13 +1974,16 @@ public partial class MainWindow : Window
         _savedJob = snapshot;
         try
         {
-            if (!_autoSyncRunning)
+            _library.SaveProgress(_savedJob);
+            if (_autoSyncOwnsGrid)
             {
-                // Resume is the user's own last job; unattended work must not take it over.
-                _jobStore.Save(_savedJob);
+                // Resume is the user's own last job, and an unattended run must not take it
+                // over. The flag outlives the run: it is cleared when the user next drives
+                // the window, and only the backend's start request is awaited here.
+                return;
             }
 
-            _library.SaveProgress(_savedJob);
+            _jobStore.Save(_savedJob);
             ResumeButton.Visibility = Visibility.Visible;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

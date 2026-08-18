@@ -249,13 +249,55 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     [Fact]
     public void TurningKeepInSyncOffIsNotUndoneBySavingProgress()
     {
-        var job = Job("mix", autoSync: false);
+        var job = Job("mix");
         Store.Save(job);
+        // The user turns it off while the download grid still believes it is on.
+        var stored = Store.Load(job.SourceUrl)!;
+        stored.AutoSync = false;
+        Store.Save(stored);
+        var snapshot = SavedJobSnapshot.Create(
+            job.SourceUrl, job.SourceName, job.SourceType, job.OutputDirectory, []);
+        snapshot.AutoSync = true;
+
+        Store.SaveProgress(snapshot);
+
+        Assert.False(Store.Load(job.SourceUrl)!.AutoSync);
+    }
+
+    [Fact]
+    public void SavingProgressOverAnUnreadableEntryKeepsTheKeepInSyncFlag()
+    {
+        var job = Job("mix");
+        Store.Save(job);
+        AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now);
+        var path = Path.Combine(LibraryDirectory, LibraryStore.KeyFor(job.SourceUrl) + ".json");
+        var text = File.ReadAllText(path);
+        // A field the reader trips over must not be read as "auto-sync is off".
+        File.WriteAllText(path, text.Replace("\"updatedAt\"", "\"updatedAt\": {}, \"broken\""));
+        Assert.Null(Store.Load(job.SourceUrl));
 
         Store.SaveProgress(SavedJobSnapshot.Create(
             job.SourceUrl, job.SourceName, job.SourceType, job.OutputDirectory, []));
 
-        Assert.False(Store.Load(job.SourceUrl)!.AutoSync);
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.True(reloaded.AutoSync);
+        Assert.Equal(Now, reloaded.LastAutoSyncUtc);
+    }
+
+    [Fact]
+    public void AStampedEntryIsNeverLeftTruncated()
+    {
+        var job = Job("mix");
+        job.Tracks.Add(new SavedTrack { Id = "one", IsComplete = true, OutputPath = "a.mp3" });
+        Store.Save(job);
+
+        Assert.True(AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now));
+
+        // The stamp is written and swapped in, so the entry is always complete on disk.
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.Single(reloaded.Tracks);
+        Assert.Equal("a.mp3", reloaded.Tracks[0].OutputPath);
+        Assert.Empty(Directory.GetFiles(LibraryDirectory, "*.tmp"));
     }
 
     public void Dispose()

@@ -92,7 +92,8 @@ Minimal JSON:
 - Auto-sync runs only while Playlist DL is open. It is skipped while a download, another source operation, or one of the app's own windows is in the way, and resumes at the next check, so an interval is a lower bound on how often a source is checked, not a promise.
 - Auto-sync starts a run only when the queue was empty and the track list on screen is not one you loaded. Otherwise it queues the sources and leaves starting to you, so it never starts work you staged and never replaces what you are looking at.
 - An imported manifest is never synced on its own, and neither is a job whose output folder is not available.
-- An auto-sync run uses the settings in force when it starts, not the settings that were in force when the source was marked.
+- An auto-sync run uses the settings that were in force when the check was queued, like every other queued job, not the settings in force when it finally runs.
+- The library shows when a source was last queued for a check. A check that was queued while the queue was busy runs when you start the queue.
 - The library check assumes one running copy of the app. A second instance started against the same library does not learn about a repair the first one made and can write its own view back.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
 - Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.

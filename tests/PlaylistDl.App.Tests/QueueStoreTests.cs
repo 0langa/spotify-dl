@@ -17,6 +17,38 @@ public sealed class QueueStoreTests : IDisposable
         DownloadQueueTests.Job(name, tracks);
 
     [Fact]
+    public void AnAutoSyncJobSurvivesARestartEvenWithNothingSelected()
+    {
+        // Its track list is decided when it runs, so the usual "at least one track" filter
+        // would drop it on the way back in and the source would go unchecked.
+        var job = Job("Kept in sync", new TrackItem { Id = "a", Status = "Done" }) with
+        {
+            ResolveSelection = true,
+            PlaylistId = null,
+            AllTracks = [],
+            Tracks = [],
+        };
+        Assert.Equal(0, job.SelectedCount);
+
+        Store.Save([job]);
+        var restored = Store.Load();
+
+        Assert.Single(restored);
+        Assert.True(restored[0].ResolveSelection);
+        Assert.Equal("Kept in sync", restored[0].Name);
+    }
+
+    [Fact]
+    public void AnOrdinaryJobWithNothingSelectedIsStillDropped()
+    {
+        var job = Job("Finished", new TrackItem { Id = "a", Status = "Done", IsSelected = false });
+
+        Store.Save([job]);
+
+        Assert.Empty(Store.Load());
+    }
+
+    [Fact]
     public void PendingJobsSurviveARestart()
     {
         var job = Job(
@@ -59,6 +91,20 @@ public sealed class QueueStoreTests : IDisposable
         Store.Save([job]);
 
         Assert.Empty(Store.Load());
+    }
+
+    [Fact]
+    public void AFullyDownloadedAutoSyncJobSurvivesARestart()
+    {
+        var job = Job("Synced", new TrackItem { Id = "a", Status = "Done", Progress = 100 });
+
+        Store.Save([job with { ResolveSelection = true }]);
+        var restored = Store.Load();
+
+        // The same snapshot without the flag is dropped, so the flag is what keeps it.
+        Assert.Single(restored);
+        Assert.True(restored[0].ResolveSelection);
+        Assert.Equal(0, restored[0].SelectedCount);
     }
 
     [Fact]

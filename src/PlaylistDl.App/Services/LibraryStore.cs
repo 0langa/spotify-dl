@@ -169,8 +169,40 @@ public sealed class LibraryStore
             job.AutoSync = stored.AutoSync;
             job.LastAutoSyncUtc = stored.LastAutoSyncUtc;
         }
+        else if (File.Exists(PathFor(job.SourceUrl)))
+        {
+            // The entry is there but could not be deserialized. Progress is still worth
+            // saving, but the preferences are read straight out of the text first, so a
+            // reader that trips over one bad field does not silently switch auto-sync off.
+            ReadAutoSyncPreferences(PathFor(job.SourceUrl), job);
+        }
 
         Save(job);
+    }
+
+    private static void ReadAutoSyncPreferences(string path, SavedJob job)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.TryGetProperty("autoSync", out var autoSync) &&
+                autoSync.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                job.AutoSync = autoSync.GetBoolean();
+            }
+
+            if (document.RootElement.TryGetProperty("lastAutoSyncUtc", out var lastCheck) &&
+                lastCheck.ValueKind == JsonValueKind.String &&
+                lastCheck.TryGetDateTimeOffset(out var when))
+            {
+                job.LastAutoSyncUtc = when;
+            }
+        }
+        catch (Exception exception) when (
+            exception is JsonException or IOException or UnauthorizedAccessException)
+        {
+            // Nothing readable to keep; the save below still preserves the download work.
+        }
     }
 
     /// <summary>
@@ -191,9 +223,14 @@ public sealed class LibraryStore
         }
 
         job.LastAutoSyncUtc = when;
+        var path = PathFor(sourceUrl);
+        var temporaryPath = path + ".tmp";
         try
         {
-            File.WriteAllText(PathFor(sourceUrl), JsonSerializer.Serialize(job, _jsonOptions));
+            // The same write-and-swap Save uses: this is the app's only unattended,
+            // repeating write, so a torn one must not be able to destroy the entry.
+            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(job, _jsonOptions));
+            File.Move(temporaryPath, path, overwrite: true);
             return true;
         }
         catch (Exception exception) when (
