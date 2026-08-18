@@ -12,7 +12,7 @@
 - An output folder that is not available — an unplugged drive, an offline share, a renamed parent — is reported as such instead of as deleted files, and the reopen option is withheld until the folder is readable again, so nothing is thrown away on the strength of a scan that could not see the files.
 - When the output folder itself is gone, the check offers to search a folder you pick instead. Files found there are relocated and the saved job follows to the new folder, which is what makes a music folder that was moved wholesale repairable.
 - An empty leftover file is deleted when its track is reopened, because the downloader skips a track whose output file already exists.
-- A repair is reflected everywhere the same job is mirrored: the loaded track list is reloaded from the repaired entry, the resume file is rewritten, and queued jobs for that source take over the repaired completion state while keeping the selection they were queued with, so none of those copies can write the pre-repair state back.
+- A repair is reflected everywhere the same job is mirrored: the loaded track list is reloaded from the repaired entry, the resume file is rewritten, and queued jobs for that source take over the repaired completion state while keeping the selection they were queued with — plus the tracks the repair reopened, which they had skipped as already downloaded — so none of those copies can write the pre-repair state back.
 
 ### Fixed
 

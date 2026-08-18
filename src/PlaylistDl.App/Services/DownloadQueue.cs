@@ -1,3 +1,4 @@
+using System.IO;
 using PlaylistDl.App.Models;
 
 namespace PlaylistDl.App.Services;
@@ -204,6 +205,7 @@ public sealed class DownloadQueue
             _jobs[index] = job with
             {
                 Snapshot = merged,
+                OutputDirectory = merged.OutputDirectory,
                 PlaylistId = null,
                 AllTracks = [],
                 Tracks = [],
@@ -257,8 +259,15 @@ public sealed class DownloadQueue
                 (queuedTrack.IsSelected || (queuedTrack.IsComplete && !track.IsComplete));
         }
 
-        // The queued job keeps its own output folder; only the track state is taken over.
-        repaired.OutputDirectory = queued.OutputDirectory;
+        // The queued job keeps its own output folder unless that folder is gone and the
+        // repair found the files somewhere else.
+        if (Directory.Exists(queued.OutputDirectory) ||
+            string.IsNullOrWhiteSpace(repaired.OutputDirectory) ||
+            !Directory.Exists(repaired.OutputDirectory))
+        {
+            repaired.OutputDirectory = queued.OutputDirectory;
+        }
+
         return repaired;
     }
 

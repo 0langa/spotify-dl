@@ -691,6 +691,29 @@ public sealed class LibraryHealthTests : IDisposable
     }
 
     [Fact]
+    public void AnOfflineFileOutsideTheOutputFolderIsNotAdoptedOntoAStrayOfTheSameName()
+    {
+        // Cross-job reuse under the "skip" policy records the other job's path. That drive
+        // being unplugged says nothing about a same-named file sitting under this job.
+        var offline = Path.Combine(_root, "unplugged", "Album");
+        WriteFile(Path.Combine("Stray", "song.mp3"));
+        var job = Job(
+            Complete("reused", Path.Combine(offline, "song.mp3")),
+            Complete("here", WriteFile("here.mp3")));
+        Store.Save(job);
+
+        var report = Scanner.Scan(job);
+
+        Assert.Equal(
+            TrackFileState.Unreachable,
+            report.Tracks.Single(track => track.Track.Id == "reused").State);
+        Assert.Equal(0, Scanner.Relocate(report));
+        Assert.Equal(
+            Path.Combine(offline, "song.mp3"),
+            Store.Load(job.SourceUrl)!.Tracks.Single(track => track.Id == "reused").OutputPath);
+    }
+
+    [Fact]
     public void AnUnreadablePathCountsAsMissingInsteadOfThrowing()
     {
         var job = Job(Complete("bad", "::not a path::"));

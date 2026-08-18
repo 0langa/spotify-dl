@@ -1708,6 +1708,13 @@ public partial class MainWindow : Window
             reopened++;
         }
 
+        if (!string.IsNullOrWhiteSpace(repaired.OutputDirectory))
+        {
+            // A relocation can move the job to the folder its files were found in, and the
+            // next save and the next download both read this box.
+            OutputDirectoryBox.Text = repaired.OutputDirectory;
+        }
+
         _savedJob = repaired;
         UpdateSelectionUi();
         UpdateOverallProgress();

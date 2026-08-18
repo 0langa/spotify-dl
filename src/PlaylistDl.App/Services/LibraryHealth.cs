@@ -175,7 +175,7 @@ public sealed class LibraryHealthScanner
                 continue;
             }
 
-            reports.Add(Classify(track, folder, claimed, adopted));
+            reports.Add(Classify(track, folder, job.OutputDirectory, claimed, adopted));
         }
 
         return new LibraryHealthReport(
@@ -198,6 +198,7 @@ public sealed class LibraryHealthScanner
     private TrackFileReport Classify(
         SavedTrack track,
         FolderIndex folder,
+        string? home,
         IReadOnlySet<string> claimed,
         HashSet<string> adopted)
     {
@@ -212,16 +213,6 @@ public sealed class LibraryHealthScanner
                     : new TrackFileReport(track, TrackFileState.Present, path);
             }
 
-            // A file that can be found in the folder being searched is repairable no
-            // matter what happened to the path it was recorded under, which is what makes
-            // a moved music folder fixable at all.
-            var candidate = FindMoved(path, folder, claimed, adopted);
-            if (candidate is not null)
-            {
-                adopted.Add(candidate);
-                return new TrackFileReport(track, TrackFileState.Moved, candidate);
-            }
-
             // FileInfo.Exists is false for an unplugged drive, an offline share, and a
             // renamed parent as well. When the folder the file was recorded in is not
             // available, the file is not gone, so it must not be reported as deleted.
@@ -229,7 +220,27 @@ public sealed class LibraryHealthScanner
             // reorganization.
             var directory = Path.GetDirectoryName(path);
             var parentMissing = !string.IsNullOrEmpty(directory) && !Directory.Exists(directory);
-            if (parentMissing && (!folder.RootAvailable || !IsUnder(path, folder.Root)))
+            var unreachable = parentMissing &&
+                (!folder.RootAvailable || !IsUnder(path, folder.Root));
+
+            // A file that can be found in the folder being searched is repairable no matter
+            // what happened to the path it was recorded under, which is what makes a moved
+            // music folder fixable at all — but only for a file the job recorded in its own
+            // output folder. A file recorded elsewhere, which cross-job reuse under the
+            // "skip" duplicate policy does, whose folder is merely offline is left
+            // unreachable: a same-named stray under this root would otherwise be adopted
+            // over a file that is still there.
+            if (!unreachable || IsUnder(path, home))
+            {
+                var candidate = FindMoved(path, folder, claimed, adopted);
+                if (candidate is not null)
+                {
+                    adopted.Add(candidate);
+                    return new TrackFileReport(track, TrackFileState.Moved, candidate);
+                }
+            }
+
+            if (unreachable)
             {
                 return new TrackFileReport(track, TrackFileState.Unreachable, null);
             }
