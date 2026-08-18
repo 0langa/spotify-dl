@@ -1062,6 +1062,9 @@ public partial class MainWindow : Window
 
     private async void CancelButton_Click(object sender, RoutedEventArgs e)
     {
+        // Cancelling is the user driving the window: what an unattended run left on screen
+        // is theirs from here, so it is neither replaced nor restarted for them.
+        _autoSyncOwnsGrid = false;
         try
         {
             if (_sourceOperationCts is not null)
@@ -1907,6 +1910,8 @@ public partial class MainWindow : Window
     /// <summary>Brings the loaded track list in line with a repaired library entry.</summary>
     private void ApplyRepairedTracks(SavedJob repaired)
     {
+        // A repair the user asked for rewrites these rows, so the window is theirs again.
+        _autoSyncOwnsGrid = false;
         var byKey = new Dictionary<string, SavedTrack>(StringComparer.Ordinal);
         foreach (var track in repaired.Tracks)
         {
