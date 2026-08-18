@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
 using PlaylistDl.App.Services;
@@ -40,6 +41,9 @@ public partial class MainWindow : Window
     private readonly List<TrackItem> _failedTracks = [];
     private readonly DownloadQueue _queue = new();
     private bool _queueRunning;
+
+    /// <summary>Checks once a minute whether a source marked "keep in sync" is due.</summary>
+    private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
     private QueuedJob? _activeQueuedJob;
     private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
@@ -115,6 +119,8 @@ public partial class MainWindow : Window
         }
         Closing += MainWindow_Closing;
         Loaded += async (_, _) => await AutoCheckForUpdatesAsync();
+        _autoSyncTimer.Tick += (_, _) => AutoSyncTick();
+        _autoSyncTimer.Start();
     }
 
     /// <summary>Stops the backend before the window really closes.</summary>
@@ -446,6 +452,84 @@ public partial class MainWindow : Window
 
         UpdateQueueUi();
         StatusText.Text = $"Added \"{_playlist.Name}\" to the queue — resolve another source or start the queue";
+    }
+
+    /// <summary>
+    /// Enqueues the sources that are due for an unattended sync, and starts the queue.
+    /// </summary>
+    /// <remarks>
+    /// Auto-sync is the ordinary queue with the ordinary sync semantics: each job is
+    /// re-resolved when it runs and only new or unfinished tracks are selected. It only
+    /// runs while nothing else does, and it only runs while the app is open.
+    /// </remarks>
+    private void AutoSyncTick()
+    {
+        if (_settings.AutoSyncMinutes <= 0 || _jobRunning || _queueRunning ||
+            _sourceOperationCts is not null || !_uiReady)
+        {
+            return;
+        }
+
+        var busy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var queued in _queue.Items)
+        {
+            busy.Add(queued.SourceUrl);
+        }
+        if (_playlist?.SourceUrl is { Length: > 0 } loaded)
+        {
+            // The grid owns that source; syncing it in the background would fight the user.
+            busy.Add(loaded);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        IReadOnlyList<SavedJob> due;
+        try
+        {
+            due = AutoSyncScheduler.Due(
+                _library.List(), TimeSpan.FromMinutes(_settings.AutoSyncMinutes), now, busy);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        var added = 0;
+        foreach (var job in due)
+        {
+            try
+            {
+                AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // Without the stamp the source would be picked again on the next tick.
+                continue;
+            }
+
+            _queue.Enqueue(new QueuedJob(
+                string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
+                job.SourceUrl,
+                job.SourceType,
+                string.IsNullOrWhiteSpace(job.OutputDirectory)
+                    ? OutputDirectoryBox.Text
+                    : job.OutputDirectory,
+                QueuedJobSettings.From(_settings),
+                job));
+            added++;
+        }
+
+        if (added == 0)
+        {
+            return;
+        }
+
+        UpdateQueueUi();
+        StatusText.Text = added == 1
+            ? "Auto-sync: checking 1 source for new tracks"
+            : $"Auto-sync: checking {added} sources for new tracks";
+        _ = RunQueueAsync();
     }
 
     private void UpdateQueueUi()

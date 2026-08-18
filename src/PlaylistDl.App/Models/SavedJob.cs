@@ -12,6 +12,12 @@ public sealed class SavedJob
 
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>Check this source for new tracks on its own while the app is open.</summary>
+    public bool AutoSync { get; set; }
+
+    /// <summary>When auto-sync last checked this source, whatever it found.</summary>
+    public DateTimeOffset? LastAutoSyncUtc { get; set; }
+
     public List<SavedTrack> Tracks { get; set; } = [];
 }
 

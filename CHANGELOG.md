@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.6.0 - 2026-08-18
+
+### Added
+
+- Scheduled auto-sync. Mark a source with Keep in sync in the library, pick an interval in Settings (30 minutes, hourly, every 6 hours, or daily), and Playlist DL checks those sources for new tracks on its own and downloads them through the ordinary queue.
+- An auto-sync run is the sync you would start by hand: the source is re-resolved when the job runs and only new or unfinished tracks are selected, with the settings in force at the time the run starts.
+- Auto-sync never runs while a download, a queue run, or another source operation is in progress, never touches the source loaded in the window, never enqueues a source that is already queued, and enqueues at most three sources per check so a long-unused library does not start a burst.
+
 ## 2.5.0 - 2026-08-12
 
 ### Added

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
 using PlaylistDl.App.Services;
@@ -88,6 +89,52 @@ public partial class LibraryWindow : Window
     private void SyncButton_Click(object sender, RoutedEventArgs e) => Choose(sync: true);
 
     private void JobsList_MouseDoubleClick(object sender, RoutedEventArgs e) => Choose(sync: false);
+
+    private void JobsList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        ShowAutoSyncState();
+
+    /// <summary>Mirrors the selected job's auto-sync flag onto the toggle.</summary>
+    private void ShowAutoSyncState()
+    {
+        AutoSyncToggle.IsEnabled = Selected is not null && !_checking;
+        AutoSyncToggle.IsChecked = Selected?.Job.AutoSync == true;
+    }
+
+    /// <summary>Turns unattended syncing on or off for the selected source.</summary>
+    private void AutoSyncToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (Selected is null || _checking)
+        {
+            ShowAutoSyncState();
+            return;
+        }
+
+        var entry = Selected;
+        var wanted = AutoSyncToggle.IsChecked == true;
+        try
+        {
+            // Written on the entry as it is on disk: this window may have been open for a
+            // while, and only this one field is being changed.
+            var job = _library.Load(entry.Job.SourceUrl) ?? entry.Job;
+            job.AutoSync = wanted;
+            _library.Save(job);
+            entry.Job.AutoSync = wanted;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            HealthPanel.Visibility = Visibility.Visible;
+            HealthText.Text = $"The library could not be written: {exception.Message}";
+            ShowAutoSyncState();
+            return;
+        }
+
+        HealthPanel.Visibility = Visibility.Visible;
+        HealthText.Text = wanted
+            ? $"{entry.Name}: checked for new tracks while the app is open, " +
+                "on the interval set in Settings."
+            : $"{entry.Name}: no longer checked on its own.";
+    }
 
     private void Choose(bool sync)
     {
@@ -203,6 +250,7 @@ public partial class LibraryWindow : Window
 
     private void SetButtonsEnabled(bool enabled)
     {
+        AutoSyncToggle.IsEnabled = enabled && Selected is not null;
         CheckFilesButton.IsEnabled = enabled;
         CheckAllButton.IsEnabled = enabled;
         DeleteButton.IsEnabled = enabled;
@@ -221,6 +269,8 @@ public partial class LibraryWindow : Window
                 .OfType<LibraryEntry>()
                 .FirstOrDefault(item => item.Job.SourceUrl == selected);
         }
+
+        ShowAutoSyncState();
     }
 
     /// <summary>
