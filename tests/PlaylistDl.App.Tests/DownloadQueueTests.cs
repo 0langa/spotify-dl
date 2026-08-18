@@ -40,6 +40,133 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void RefreshSnapshotsReplacesRepairedJobsAndDropsTheirSession()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+        var repairedUrl = queue.Items[0].SourceUrl;
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+        var repaired = new SavedJob
+        {
+            SourceUrl = repairedUrl,
+            SourceName = "first",
+            OutputDirectory = @"C:\music",
+            Tracks = [new SavedTrack { Id = "t1", IsSelected = true, IsComplete = false }],
+        };
+
+        var refreshed = queue.RefreshSnapshots(
+            source => source == repairedUrl ? repaired : null);
+
+        Assert.Equal(1, refreshed);
+        Assert.Equal(1, changes);
+        Assert.Same(repaired, queue.Items[0].Snapshot);
+        // The resolved session belongs to the pre-repair selection and has to be redone.
+        Assert.True(queue.Items[0].NeedsResolve);
+        Assert.False(queue.Items[1].NeedsResolve);
+    }
+
+    [Fact]
+    public void RefreshSnapshotsKeepsTheSelectionTheJobWasQueuedWith()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job(
+            "mix",
+            new TrackItem { Id = "t1", IsSelected = true },
+            new TrackItem { Id = "t2", IsSelected = false }));
+        var url = queue.Items[0].SourceUrl;
+        var repaired = new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "mix",
+            OutputDirectory = @"C:\elsewhere",
+            Tracks =
+            [
+                new SavedTrack { Id = "t1", IsSelected = true, IsComplete = true, OutputPath = @"C:\music\t1.mp3" },
+                new SavedTrack { Id = "t2", IsSelected = true, IsComplete = false },
+                new SavedTrack { Id = "t3", IsSelected = true, IsComplete = false },
+            ],
+        };
+
+        Assert.Equal(1, queue.RefreshSnapshots(source => source == url ? repaired : null));
+
+        var snapshot = queue.Items[0].Snapshot;
+        // The repaired completion state is taken over...
+        Assert.True(snapshot.Tracks.Single(track => track.Id == "t1").IsComplete);
+        // ...but a track the user deselected before queuing stays deselected.
+        Assert.False(snapshot.Tracks.Single(track => track.Id == "t2").IsSelected);
+        // A track this job never had is not added to it by a repair.
+        Assert.False(snapshot.Tracks.Single(track => track.Id == "t3").IsSelected);
+        // The queued job keeps its own output folder.
+        Assert.Equal(@"C:\music", snapshot.OutputDirectory);
+    }
+
+    [Fact]
+    public void RefreshSnapshotsStoresTheRepairEvenWhenNothingIsLeftToDownload()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("mix", new TrackItem { Id = "t1", IsSelected = true }));
+        var url = queue.Items[0].SourceUrl;
+        var repaired = new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "mix",
+            OutputDirectory = @"C:\music",
+            Tracks = [new SavedTrack { Id = "t1", IsSelected = true, IsComplete = true }],
+        };
+
+        Assert.Equal(1, queue.RefreshSnapshots(source => source == url ? repaired : null));
+
+        // Keeping the pre-repair snapshot would let the run write it back over the repair.
+        Assert.Same(repaired, queue.Items[0].Snapshot);
+        Assert.Equal(0, queue.Items[0].SelectedCount);
+    }
+
+    [Fact]
+    public void ATrackTheRepairReopenedIsTakenBackIntoTheQueuedJob()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job(
+            "mix",
+            new TrackItem { Id = "t1", IsSelected = true },
+            new TrackItem { Id = "done", IsSelected = false, Status = "Done" }));
+        var url = queue.Items[0].SourceUrl;
+        var repaired = new SavedJob
+        {
+            SourceUrl = url,
+            SourceName = "mix",
+            OutputDirectory = @"C:\music",
+            Tracks =
+            [
+                new SavedTrack { Id = "t1", IsSelected = true, IsComplete = false },
+                // The library check found its file gone and reopened it.
+                new SavedTrack { Id = "done", IsSelected = true, IsComplete = false },
+            ],
+        };
+
+        Assert.Equal(1, queue.RefreshSnapshots(source => source == url ? repaired : null));
+
+        var snapshot = queue.Items[0].Snapshot;
+        Assert.True(snapshot.Tracks.Single(track => track.Id == "done").IsSelected);
+        Assert.Equal(2, queue.Items[0].SelectedCount);
+    }
+
+    [Fact]
+    public void RefreshSnapshotsLeavesTheQueueAloneWhenNothingWasRepaired()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        var before = queue.Items[0];
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+
+        Assert.Equal(0, queue.RefreshSnapshots(_ => null));
+        Assert.Same(before, queue.Items[0]);
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();

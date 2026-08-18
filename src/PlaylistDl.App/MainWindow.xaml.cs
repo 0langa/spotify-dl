@@ -1597,10 +1597,130 @@ public partial class MainWindow : Window
     private async void LibraryButton_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new LibraryWindow(_library) { Owner = this };
-        if (dialog.ShowDialog() == true && dialog.SelectedJob is not null)
+        var opened = dialog.ShowDialog() == true && dialog.SelectedJob is not null;
+        ReconcileRepairedJobs(dialog.RepairedSources);
+        if (opened)
         {
-            await RestoreJobAsync(dialog.SelectedJob, dialog.SyncRequested);
+            await RestoreJobAsync(dialog.SelectedJob!, dialog.SyncRequested);
         }
+    }
+
+    /// <summary>
+    /// Brings everything that mirrors the library back in line after a repair.
+    /// </summary>
+    /// <remarks>
+    /// The library window writes only the library entry, but the same job is mirrored in
+    /// the grid, in the resume file, and in every queued job's snapshot. Any of those
+    /// would write the pre-repair state back over the repair, so the stale copies are
+    /// dropped or refreshed here.
+    /// </remarks>
+    private void ReconcileRepairedJobs(IReadOnlyCollection<string> repairedSources)
+    {
+        if (repairedSources.Count == 0)
+        {
+            return;
+        }
+
+        var resume = _jobStore.Load();
+        if (resume is not null &&
+            repairedSources.Contains(resume.SourceUrl, StringComparer.OrdinalIgnoreCase) &&
+            _library.Load(resume.SourceUrl) is { } refreshed)
+        {
+            try
+            {
+                _jobStore.Save(refreshed);
+                _savedJob = refreshed;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // The library entry is repaired either way; Resume just stays stale.
+            }
+        }
+
+        _queue.RefreshSnapshots(source =>
+            repairedSources.Contains(source, StringComparer.OrdinalIgnoreCase)
+                ? _library.Load(source)
+                : null);
+
+        var current = _playlist?.SourceUrl;
+        if (string.IsNullOrWhiteSpace(current) ||
+            !repairedSources.Contains(current, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // The grid holds the pre-repair rows and the next save would put them back. The
+        // repaired entry is applied to them in place: the resolved backend session is
+        // still valid, so tearing it down and re-resolving the source would only cost the
+        // user their session for nothing.
+        if (_library.Load(current) is not { } repaired)
+        {
+            InvalidateBackendSession("Saved job repaired — reload it from the library");
+            return;
+        }
+
+        ApplyRepairedTracks(repaired);
+    }
+
+    /// <summary>Brings the loaded track list in line with a repaired library entry.</summary>
+    private void ApplyRepairedTracks(SavedJob repaired)
+    {
+        var byKey = new Dictionary<string, SavedTrack>(StringComparer.Ordinal);
+        foreach (var track in repaired.Tracks)
+        {
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                byKey.TryAdd(track.SpotifyUrl, track);
+            }
+            if (!string.IsNullOrEmpty(track.Id))
+            {
+                byKey.TryAdd(track.Id, track);
+            }
+        }
+
+        var reopened = 0;
+        foreach (var track in Tracks)
+        {
+            SavedTrack? saved = null;
+            if (!string.IsNullOrEmpty(track.SpotifyUrl))
+            {
+                byKey.TryGetValue(track.SpotifyUrl, out saved);
+            }
+            if (saved is null && !string.IsNullOrEmpty(track.Id))
+            {
+                byKey.TryGetValue(track.Id, out saved);
+            }
+            if (saved is null)
+            {
+                continue;
+            }
+
+            track.OutputPath = saved.OutputPath;
+            if (saved.IsComplete || track.Status != "Done")
+            {
+                continue;
+            }
+
+            track.Status = "Ready";
+            track.Progress = 0;
+            track.IsSelected = true;
+            reopened++;
+        }
+
+        if (!string.IsNullOrWhiteSpace(repaired.OutputDirectory))
+        {
+            // A relocation can move the job to the folder its files were found in, and the
+            // next save and the next download both read this box.
+            OutputDirectoryBox.Text = repaired.OutputDirectory;
+        }
+
+        _savedJob = repaired;
+        UpdateSelectionUi();
+        UpdateOverallProgress();
+        StatusText.Text = reopened == 0
+            ? "Saved job updated from the library check"
+            : $"{reopened} tracks are ready to download again";
     }
 
     private async Task RestoreJobAsync(SavedJob saved, bool sync)

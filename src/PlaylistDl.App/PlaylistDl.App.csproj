@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>PlaylistDL</AssemblyName>
     <RootNamespace>PlaylistDl.App</RootNamespace>
-    <Version>2.4.0</Version>
+    <Version>2.5.0</Version>
     <ApplicationIcon>Assets\PlaylistDL.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -22,4 +22,8 @@
     <Resource Include="Assets\PlaylistDL.ico" />
     <Resource Include="Assets\PlaylistDL.png" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="PlaylistDl.App.Tests" />
+  </ItemGroup>
+
 </Project>
