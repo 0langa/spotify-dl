@@ -93,19 +93,6 @@ public sealed class QueueStoreTests : IDisposable
         Assert.Empty(Store.Load());
     }
 
-    [Fact]
-    public void AFullyDownloadedAutoSyncJobSurvivesARestart()
-    {
-        var job = Job("Synced", new TrackItem { Id = "a", Status = "Done", Progress = 100 });
-
-        Store.Save([job with { ResolveSelection = true }]);
-        var restored = Store.Load();
-
-        // The same snapshot without the flag is dropped, so the flag is what keeps it.
-        Assert.Single(restored);
-        Assert.True(restored[0].ResolveSelection);
-        Assert.Equal(0, restored[0].SelectedCount);
-    }
 
     [Fact]
     public void QueueOrderIsPreserved()

@@ -138,31 +138,18 @@ public partial class LibraryWindow : Window
             return;
         }
 
-        try
+        // Written on the entry as it is on disk, and without touching anything else on it:
+        // this window may have been open for a while, and only this one field is changing.
+        if (!_library.SetAutoSync(entry.Job.SourceUrl, wanted))
         {
-            // Written on the entry as it is on disk: this window may have been open for a
-            // while, and only this one field is being changed.
-            if (_library.Load(entry.Job.SourceUrl) is not { } job)
-            {
-                AutoSyncToggle.IsChecked = entry.Job.AutoSync;
-                HealthPanel.Visibility = Visibility.Visible;
-                HealthText.Text = $"{entry.Name}: the saved job could not be read, so " +
-                    "nothing was changed.";
-                return;
-            }
-
-            job.AutoSync = wanted;
-            _library.Save(job);
-            entry.Job.AutoSync = wanted;
-        }
-        catch (Exception exception) when (
-            exception is IOException or UnauthorizedAccessException)
-        {
+            AutoSyncToggle.IsChecked = entry.Job.AutoSync;
             HealthPanel.Visibility = Visibility.Visible;
-            HealthText.Text = $"The library could not be written: {exception.Message}";
-            ShowAutoSyncState();
+            HealthText.Text = $"{entry.Name}: the saved job could not be written, so " +
+                "nothing was changed.";
             return;
         }
+
+        entry.Job.AutoSync = wanted;
 
         RefreshKeepingSelection();
         HealthPanel.Visibility = Visibility.Visible;

@@ -185,6 +185,11 @@ public sealed class LibraryStore
         try
         {
             using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
             if (document.RootElement.TryGetProperty("autoSync", out var autoSync) &&
                 autoSync.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
@@ -214,7 +219,19 @@ public sealed class LibraryStore
     /// happened.
     /// </remarks>
     /// <returns>False when there was no entry to stamp, or it could not be written.</returns>
-    public bool RecordAutoSyncCheck(string sourceUrl, DateTimeOffset when)
+    public bool RecordAutoSyncCheck(string sourceUrl, DateTimeOffset when) =>
+        WriteField(sourceUrl, job => job.LastAutoSyncUtc = when);
+
+    /// <summary>Turns unattended syncing on or off for one source.</summary>
+    /// <remarks>
+    /// Like the check stamp, this leaves UpdatedAt alone: a preference is not work on the
+    /// job, and bumping it would reorder the library list and claim a fresh download.
+    /// </remarks>
+    /// <returns>False when there was no entry to change, or it could not be written.</returns>
+    public bool SetAutoSync(string sourceUrl, bool autoSync) =>
+        WriteField(sourceUrl, job => job.AutoSync = autoSync);
+
+    private bool WriteField(string sourceUrl, Action<SavedJob> change)
     {
         var job = Load(sourceUrl);
         if (job is null)
@@ -222,7 +239,7 @@ public sealed class LibraryStore
             return false;
         }
 
-        job.LastAutoSyncUtc = when;
+        change(job);
         var path = PathFor(sourceUrl);
         var temporaryPath = path + ".tmp";
         try
@@ -236,7 +253,21 @@ public sealed class LibraryStore
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
+            Discard(temporaryPath);
             return false;
+        }
+    }
+
+    private static void Discard(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            // Nothing else to try; the entry itself is untouched either way.
         }
     }
 

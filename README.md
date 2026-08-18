@@ -90,8 +90,8 @@ Minimal JSON:
 - When the output folder cannot be read in full — including a folder behind a junction or symlink, which is never followed — the check reports what it saw, relocates nothing, and does not offer to reopen tracks, because an unread file is indistinguishable from a deleted one. A folder that is not available at all (unplugged drive, offline share, renamed parent) is reported as unavailable rather than as deleted files.
 - Paths are compared in canonical form, which does not resolve junctions and symlinks. The check does not descend into them either, so a file that only exists under a linked folder is never seen and never adopted.
 - Auto-sync runs only while Playlist DL is open. It is skipped while a download, another source operation, or one of the app's own windows is in the way, and resumes at the next check, so an interval is a lower bound on how often a source is checked, not a promise.
-- Auto-sync starts a run only when the queue was empty and the track list on screen is not one you loaded. Otherwise it queues the sources and leaves starting to you, so it never starts work you staged and never replaces what you are looking at.
-- An imported manifest is never synced on its own, and neither is a job whose output folder is not available.
+- Auto-sync starts a run only when the queue was empty and neither the track list nor the source box holds anything you put there. Otherwise it queues the sources and leaves starting to you, so it never starts work you staged and never replaces what you are looking at.
+- An imported manifest is never synced on its own, and neither is a free-text search or a job whose output folder is not available.
 - An auto-sync run uses the settings that were in force when the check was queued, like every other queued job, not the settings in force when it finally runs.
 - The library shows when a source was last queued for a check. A check that was queued while the queue was busy runs when you start the queue.
 - The library check assumes one running copy of the app. A second instance started against the same library does not learn about a repair the first one made and can write its own view back.

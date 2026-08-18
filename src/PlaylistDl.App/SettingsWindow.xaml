@@ -103,7 +103,7 @@
           <ComboBoxItem Tag="360">Every 6 hours</ComboBoxItem>
           <ComboBoxItem Tag="1440">Once a day</ComboBoxItem>
         </ComboBox>
-        <TextBlock Text="Sources you mark with Keep in sync in the library are checked for new tracks and downloaded through the queue. This runs only while Playlist DL is open and never while a download is running."
+        <TextBlock Text="Sources you mark with Keep in sync in the library are checked for new tracks on this interval and queued. The check runs only while Playlist DL is open, and never while a download, another source operation, or one of the app's windows is in the way. It starts the queue itself only when the queue was empty and the window is free; otherwise the sources wait for you to start the queue."
                    Foreground="#AEB6C5" TextWrapping="Wrap" Margin="0,6,0,0" />
 
         <TextBlock Text="Download pacing" FontWeight="SemiBold" Margin="0,20,0,0" />

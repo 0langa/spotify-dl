@@ -22,15 +22,17 @@ public static class AutoSyncScheduler
     /// </summary>
     /// <remarks>
     /// An imported manifest is a local file that may be gone or on a drive that is not
-    /// plugged in, and a job whose output folder has disappeared would have its tree
-    /// recreated somewhere the user cannot see. Neither is safe to act on with nobody
-    /// watching.
+    /// plugged in. A free-text search is a picker, not a list: re-running it later returns
+    /// whatever the provider ranks highest that day, which is not what the user chose. And
+    /// a job whose output folder has disappeared would have its tree recreated somewhere
+    /// the user cannot see. None of the three is safe to act on with nobody watching.
     /// </remarks>
     public static bool CanAutoSync(SavedJob job)
     {
         ArgumentNullException.ThrowIfNull(job);
         if (string.IsNullOrWhiteSpace(job.SourceUrl) ||
-            string.Equals(job.SourceType, "import", StringComparison.OrdinalIgnoreCase))
+            string.Equals(job.SourceType, "import", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(job.SourceType, "search", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

@@ -138,8 +138,14 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     [Fact]
     public void ASourceWithoutAUrlIsIgnored()
     {
-        var jobs = new[] { new SavedJob { SourceUrl = "  ", AutoSync = true } };
+        Directory.CreateDirectory(MusicDirectory);
+        // Everything else about this job is fine, so only the missing URL can reject it.
+        var jobs = new[]
+        {
+            new SavedJob { SourceUrl = "  ", AutoSync = true, OutputDirectory = MusicDirectory },
+        };
 
+        Assert.False(AutoSyncScheduler.CanAutoSync(jobs[0]));
         Assert.Empty(AutoSyncScheduler.Due(jobs, TimeSpan.FromHours(1), Now));
     }
 
@@ -285,19 +291,52 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void AStampedEntryIsNeverLeftTruncated()
+    public void AStampThatCannotBeWrittenLeavesTheEntryIntact()
     {
         var job = Job("mix");
         job.Tracks.Add(new SavedTrack { Id = "one", IsComplete = true, OutputPath = "a.mp3" });
         Store.Save(job);
+        var path = Path.Combine(LibraryDirectory, LibraryStore.KeyFor(job.SourceUrl) + ".json");
+        var before = File.ReadAllText(path);
+        File.SetAttributes(path, FileAttributes.ReadOnly);
 
-        Assert.True(AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now));
+        try
+        {
+            Assert.False(AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now));
+        }
+        finally
+        {
+            File.SetAttributes(path, FileAttributes.Normal);
+        }
 
-        // The stamp is written and swapped in, so the entry is always complete on disk.
-        var reloaded = Store.Load(job.SourceUrl)!;
-        Assert.Single(reloaded.Tracks);
-        Assert.Equal("a.mp3", reloaded.Tracks[0].OutputPath);
+        // The entry is written and swapped in, so a failed write cannot damage it.
+        Assert.Equal(before, File.ReadAllText(path));
         Assert.Empty(Directory.GetFiles(LibraryDirectory, "*.tmp"));
+    }
+
+    [Fact]
+    public void TurningKeepInSyncOnDoesNotCountAsWorkOnTheJob()
+    {
+        var job = Job("mix", autoSync: false);
+        Store.Save(job);
+        var updatedAt = Store.Load(job.SourceUrl)!.UpdatedAt;
+
+        Assert.True(Store.SetAutoSync(job.SourceUrl, true));
+
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.True(reloaded.AutoSync);
+        // Otherwise ticking a box reorders the library and claims a fresh download.
+        Assert.Equal(updatedAt, reloaded.UpdatedAt);
+    }
+
+    [Fact]
+    public void AFreeTextSearchIsNeverSyncedUnattended()
+    {
+        // Re-running the search returns whatever ranks highest that day, not what was picked.
+        var jobs = new[] { Job("query", sourceType: "search") };
+
+        Assert.False(AutoSyncScheduler.CanAutoSync(jobs[0]));
+        Assert.Empty(AutoSyncScheduler.Due(jobs, TimeSpan.FromHours(1), Now));
     }
 
     public void Dispose()

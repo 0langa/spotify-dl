@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
-using System.Windows.Interop;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using PlaylistDl.App.Models;
@@ -47,9 +46,30 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
 
     /// <summary>True when the track list on screen is one auto-sync put there.</summary>
+    /// <remarks>
+    /// The flag has to outlive the run itself, because the queue call returns as soon as
+    /// the backend accepts the job while the resume-point guard is still needed. What the
+    /// run wrote into the two boxes is remembered with it: anything else in them was put
+    /// there by the user, and then the window is theirs again.
+    /// </remarks>
     private bool _autoSyncOwnsGrid;
+    private string? _autoSyncSourceUrl;
+    private string? _autoSyncOutputDirectory;
 
     private bool _autoSyncTickBusy;
+
+    /// <summary>Sources of the current run that turned out to have nothing new.</summary>
+    private int _queueUpToDate;
+
+    /// <summary>
+    /// How many modal loops of this window are open that WPF does not count for us.
+    /// </summary>
+    /// <remarks>
+    /// A message box and the shell file and folder pickers are Win32 modal loops: they keep
+    /// pumping the auto-sync timer and never appear in <see cref="Window.OwnedWindows"/>,
+    /// and ComponentDispatcher.IsThreadModal does not see them either.
+    /// </remarks>
+    private int _modalDepth;
     private QueuedJob? _activeQueuedJob;
     private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
@@ -507,20 +527,34 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var stamped = await Task.Run(() =>
-                due.Where(job => AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now))
-                    .ToList());
-
-            // Checked once more: the awaits above let the user start something.
-            if (stamped.Count == 0 || !CanAutoSyncNow())
+            // The queue and the loaded source may have changed while the library was read.
+            busy.Clear();
+            foreach (var queued in _queue.Items)
             {
-                return;
+                busy.Add(queued.SourceUrl);
+            }
+            if (_playlist?.SourceUrl is { Length: > 0 } current)
+            {
+                busy.Add(current);
             }
 
             var queueWasEmpty = _queue.IsEmpty;
             var added = 0;
-            foreach (var job in stamped)
+            foreach (var job in due)
             {
+                if (busy.Contains(job.SourceUrl))
+                {
+                    continue;
+                }
+
+                // Stamped and queued in one step, with nothing awaited in between: a stamp
+                // without a queued job would park the source for a whole interval, and a
+                // gap here would let a run the user starts absorb the jobs.
+                if (!AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now))
+                {
+                    continue;
+                }
+
                 _queue.Enqueue(new QueuedJob(
                     string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
                     job.SourceUrl,
@@ -534,11 +568,16 @@ public partial class MainWindow : Window
                 added++;
             }
 
+            if (added == 0)
+            {
+                return;
+            }
+
             UpdateQueueUi();
             var sources = added == 1 ? "1 source" : $"{added} sources";
             // A run replaces the URL box, the output folder, and the grid, so it may only
             // start when none of them holds something the user put there.
-            var gridIsFree = _autoSyncOwnsGrid ||
+            var gridIsFree = OwnsWindow() ||
                 (_playlist is null && string.IsNullOrWhiteSpace(PlaylistUrlBox.Text));
             if (!queueWasEmpty || !gridIsFree || !CanAutoSyncNow())
             {
@@ -555,12 +594,6 @@ public partial class MainWindow : Window
             _autoSyncOwnsGrid = true;
             StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
             await RunQueueAsync();
-            if (!_jobRunning && !_queueRunning && _queueReport.Count == 0)
-            {
-                // Every source turned out to be up to date, so no job ever started and
-                // nothing else writes a closing line.
-                StatusText.Text = $"Auto-sync checked {sources} — nothing new";
-            }
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
@@ -580,6 +613,24 @@ public partial class MainWindow : Window
     /// Modal windows are excluded because Settings, Library, and Queue all act on the
     /// state a run would change under them, and a WPF dialog does not stop this timer.
     /// </remarks>
+    /// <summary>Whether the window still holds exactly what the last unattended run put there.</summary>
+    private bool OwnsWindow() =>
+        _autoSyncOwnsGrid &&
+        string.Equals(PlaylistUrlBox.Text, _autoSyncSourceUrl, StringComparison.Ordinal) &&
+        string.Equals(OutputDirectoryBox.Text, _autoSyncOutputDirectory, StringComparison.Ordinal);
+
+    /// <summary>Marks a Win32 modal loop as open for as long as it is used.</summary>
+    private IDisposable EnterModal()
+    {
+        _modalDepth++;
+        return new ModalScope(this);
+    }
+
+    private sealed class ModalScope(MainWindow window) : IDisposable
+    {
+        public void Dispose() => window._modalDepth--;
+    }
+
     private bool CanAutoSyncNow() =>
         _settings.AutoSyncMinutes > 0 &&
         !_jobRunning &&
@@ -587,9 +638,7 @@ public partial class MainWindow : Window
         !_shuttingDown &&
         _sourceOperationCts is null &&
         OwnedWindows.Count == 0 &&
-        // A message box and the shell folder picker are Win32 modal loops: they pump this
-        // timer and never show up in OwnedWindows.
-        !ComponentDispatcher.IsThreadModal;
+        _modalDepth == 0;
 
     private void UpdateQueueUi()
     {
@@ -740,6 +789,7 @@ public partial class MainWindow : Window
     {
         QueuedJob prepared;
         _queueRunning = true;
+        _queueUpToDate = 0;
         // Claim the session before the first await: a second click, or an analyze while a
         // job is being prepared, would otherwise run two jobs against one backend.
         UpdateSourceIntakeAvailability();
@@ -770,6 +820,7 @@ public partial class MainWindow : Window
                 // An auto-sync check that found nothing new: the quiet outcome, not a
                 // failure, so it is neither reported nor counted against the retry limit.
                 _activeQueuedJob = null;
+                _queueUpToDate++;
                 continue;
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -804,6 +855,11 @@ public partial class MainWindow : Window
         };
         PlaylistUrlBox.Text = prepared.SourceUrl;
         OutputDirectoryBox.Text = prepared.OutputDirectory;
+        if (_autoSyncOwnsGrid)
+        {
+            _autoSyncSourceUrl = PlaylistUrlBox.Text;
+            _autoSyncOutputDirectory = OutputDirectoryBox.Text;
+        }
         SetTracks(prepared.AllTracks);
         PlaylistTitle.Text = prepared.Name;
         _tracksView.Refresh();
@@ -878,13 +934,23 @@ public partial class MainWindow : Window
         }
         UpdateQueueUi();
         PersistQueue();
+        var upToDate = _queueUpToDate == 1
+            ? "1 source was already up to date"
+            : $"{_queueUpToDate} sources were already up to date";
         if (_queueReport.Count > 0)
         {
             var saved = _queueReport.Sum(summary => summary.Succeeded);
             var failed = _queueReport.Sum(summary => summary.Failed);
             StatusText.Text =
-                $"Queue finished — {_queueReport.Count} jobs, {saved} saved, {failed} failed. " +
-                "Open Queue for the per-job report.";
+                $"Queue finished — {_queueReport.Count} jobs, {saved} saved, {failed} failed" +
+                (_queueUpToDate > 0 ? $", {upToDate}" : string.Empty) +
+                ". Open Queue for the per-job report.";
+        }
+        else if (_queueUpToDate > 0)
+        {
+            // Every job was a check that found nothing, so nothing else writes a line and
+            // the status would be left on "preparing".
+            StatusText.Text = $"Queue finished — {upToDate}";
         }
     }
 
@@ -1014,6 +1080,7 @@ public partial class MainWindow : Window
 
     private void ChooseFolderButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         var initialDirectory = FolderPickerPath.ResolveInitialDirectory(OutputDirectoryBox.Text);
         var attempts = initialDirectory is null ? new string?[] { null } : new string?[] { initialDirectory, null };
 
@@ -1486,6 +1553,7 @@ public partial class MainWindow : Window
 
     private async void DiagnoseButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         DiagnoseButton.IsEnabled = false;
         StatusText.Text = "Running network diagnosis…";
         try
@@ -1975,7 +2043,7 @@ public partial class MainWindow : Window
         try
         {
             _library.SaveProgress(_savedJob);
-            if (_autoSyncOwnsGrid)
+            if (OwnsWindow())
             {
                 // Resume is the user's own last job, and an unattended run must not take it
                 // over. The flag outlives the run: it is cleared when the user next drives
@@ -1994,6 +2062,7 @@ public partial class MainWindow : Window
 
     private async void ImportManifestButton_Click(object sender, RoutedEventArgs e)
     {
+        using var modal = EnterModal();
         var dialog = new OpenFileDialog
         {
             Title = "Import track manifest",
