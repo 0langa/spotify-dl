@@ -187,6 +187,32 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void ReplaceKeepsAnAutoSyncJobButDropsAFinishedOne()
+    {
+        var queue = new DownloadQueue();
+        var autoSync = Job("kept in sync", new TrackItem { Id = "a", Status = "Done" }) with
+        {
+            ResolveSelection = true,
+            PlaylistId = null,
+            AllTracks = [],
+            Tracks = [],
+        };
+        var finished = Job("finished", new TrackItem { Id = "b", Status = "Done" }) with
+        {
+            PlaylistId = null,
+            AllTracks = [],
+            Tracks = [],
+        };
+        Assert.Equal(0, autoSync.SelectedCount);
+        Assert.Equal(0, finished.SelectedCount);
+
+        queue.Replace([autoSync, finished]);
+
+        // The auto-sync job decides its tracks when it runs, so it must survive the filter.
+        Assert.Equal(["kept in sync"], queue.PendingNames());
+    }
+
+    [Fact]
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();

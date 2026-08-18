@@ -133,8 +133,13 @@ public partial class LibraryWindow : Window
                 entry.Job.SourceType, "import", StringComparison.OrdinalIgnoreCase)
                 ? $"{entry.Name}: an imported manifest cannot be synced on its own, " +
                     "because its source is a file on this machine."
-                : $"{entry.Name}: its output folder {entry.Job.OutputDirectory} is not " +
-                    "available, so it cannot be synced on its own.";
+                : string.Equals(
+                    entry.Job.SourceType, "search", StringComparison.OrdinalIgnoreCase)
+                    ? $"{entry.Name}: a search cannot be synced on its own, because running " +
+                        "it again returns whatever ranks highest that day rather than what " +
+                        "you picked."
+                    : $"{entry.Name}: its output folder is not available, so it cannot be " +
+                        "synced on its own.";
             return;
         }
 

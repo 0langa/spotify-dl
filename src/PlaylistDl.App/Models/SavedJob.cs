@@ -15,7 +15,12 @@ public sealed class SavedJob
     /// <summary>Check this source for new tracks on its own while the app is open.</summary>
     public bool AutoSync { get; set; }
 
-    /// <summary>When auto-sync last checked this source, whatever it found.</summary>
+    /// <summary>When auto-sync last queued a check for this source.</summary>
+    /// <remarks>
+    /// Written when the check is queued, not when it runs: the stamp is what stops the
+    /// same source being queued again on every tick, and a queued check may wait for the
+    /// user to start the queue.
+    /// </remarks>
     public DateTimeOffset? LastAutoSyncUtc { get; set; }
 
     public List<SavedTrack> Tracks { get; set; } = [];

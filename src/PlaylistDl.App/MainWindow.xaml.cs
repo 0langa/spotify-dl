@@ -273,6 +273,8 @@ public partial class MainWindow : Window
 
     private void Track_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        // Ticking a row is the user taking the list back from an unattended run.
+        _autoSyncOwnsGrid = false;
         if (e.PropertyName == nameof(TrackItem.IsSelected) && !_bulkSelectionUpdate)
         {
             UpdateSelectionUi();
@@ -353,6 +355,7 @@ public partial class MainWindow : Window
         {
             if (input.Length == 0 || input.Contains("://", StringComparison.Ordinal))
             {
+                using var modal = EnterModal();
                 MessageBox.Show(
                     this,
                     "Paste a Spotify playlist, album, or track URL — or type an artist and title to search.",
@@ -510,9 +513,11 @@ public partial class MainWindow : Window
             {
                 busy.Add(queued.SourceUrl);
             }
-            if (_playlist?.SourceUrl is { Length: > 0 } loaded)
+            if (!OwnsWindow() && _playlist?.SourceUrl is { Length: > 0 } loaded)
             {
-                // The grid owns that source; syncing it in the background would fight the user.
+                // The grid owns that source; syncing it in the background would fight the
+                // user. A grid the last unattended run left behind is not theirs, and
+                // parking its own source there would check it exactly once per session.
                 busy.Add(loaded);
             }
 
@@ -533,7 +538,7 @@ public partial class MainWindow : Window
             {
                 busy.Add(queued.SourceUrl);
             }
-            if (_playlist?.SourceUrl is { Length: > 0 } current)
+            if (!OwnsWindow() && _playlist?.SourceUrl is { Length: > 0 } current)
             {
                 busy.Add(current);
             }
@@ -591,6 +596,7 @@ public partial class MainWindow : Window
 
             // Each run reports on itself; the previous run's report is replaced.
             _queueReport.Clear();
+            _queueUpToDate = 0;
             _autoSyncOwnsGrid = true;
             StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
             await RunQueueAsync();
@@ -606,13 +612,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Whether an unattended check may run at this moment.
-    /// </summary>
-    /// <remarks>
-    /// Modal windows are excluded because Settings, Library, and Queue all act on the
-    /// state a run would change under them, and a WPF dialog does not stop this timer.
-    /// </remarks>
     /// <summary>Whether the window still holds exactly what the last unattended run put there.</summary>
     private bool OwnsWindow() =>
         _autoSyncOwnsGrid &&
@@ -631,6 +630,14 @@ public partial class MainWindow : Window
         public void Dispose() => window._modalDepth--;
     }
 
+    /// <summary>
+    /// Whether an unattended check may run at this moment.
+    /// </summary>
+    /// <remarks>
+    /// The app's own windows are excluded because Settings, Library, and Queue all act on
+    /// the state a run would change under them, and neither a WPF dialog nor a Win32 modal
+    /// loop stops this timer.
+    /// </remarks>
     private bool CanAutoSyncNow() =>
         _settings.AutoSyncMinutes > 0 &&
         !_jobRunning &&
@@ -789,7 +796,6 @@ public partial class MainWindow : Window
     {
         QueuedJob prepared;
         _queueRunning = true;
-        _queueUpToDate = 0;
         // Claim the session before the first await: a second click, or an analyze while a
         // job is being prepared, would otherwise run two jobs against one backend.
         UpdateSourceIntakeAvailability();
@@ -2043,7 +2049,7 @@ public partial class MainWindow : Window
         try
         {
             _library.SaveProgress(_savedJob);
-            if (OwnsWindow())
+            if (_autoSyncOwnsGrid)
             {
                 // Resume is the user's own last job, and an unattended run must not take it
                 // over. The flag outlives the run: it is cleared when the user next drives
