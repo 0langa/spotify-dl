@@ -7,8 +7,11 @@
 ### Added
 
 - Scheduled auto-sync. Mark a source with Keep in sync in the library, pick an interval in Settings (30 minutes, hourly, every 6 hours, or daily), and Playlist DL checks those sources for new tracks on its own and downloads them through the ordinary queue.
-- An auto-sync run is the sync you would start by hand: the source is re-resolved when the job runs and only new or unfinished tracks are selected, with the settings in force at the time the run starts.
-- Auto-sync never runs while a download, a queue run, or another source operation is in progress, never touches the source loaded in the window, never enqueues a source that is already queued, and enqueues at most three sources per check so a long-unused library does not start a burst.
+- An auto-sync run is the sync you would start by hand: the source is re-resolved when the job runs and only new or unfinished tracks are selected, with the settings in force at the time the run starts. A source that turns out to have nothing new is not reported as a failure.
+- Auto-sync never acts for you. It runs the sources it queued only when the queue was empty and the track list on screen is not one you loaded; otherwise it queues them and says so, and you start the queue yourself. It never runs while a download, a queue run, another source operation, or one of the app's own windows is open, never enqueues a source that is already queued or loaded, and takes at most three sources per check.
+- Sources that cannot be checked safely on their own are refused: an imported manifest, whose source is a file on this machine, and a job whose output folder is not available.
+- An unattended run leaves the Resume point alone, so Resume still restores the job you last worked on yourself.
+- The library list shows which sources are kept in sync and when each was last checked.
 
 ## 2.5.0 - 2026-08-12
 

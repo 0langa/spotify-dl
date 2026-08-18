@@ -44,6 +44,14 @@ public partial class MainWindow : Window
 
     /// <summary>Checks once a minute whether a source marked "keep in sync" is due.</summary>
     private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
+
+    /// <summary>True while a run auto-sync started is going, so it stays out of the way.</summary>
+    private bool _autoSyncRunning;
+
+    /// <summary>True when the track list on screen is one auto-sync put there.</summary>
+    private bool _autoSyncOwnsGrid;
+
+    private bool _autoSyncTickBusy;
     private QueuedJob? _activeQueuedJob;
     private CancellationTokenSource? _sourceOperationCts;
     private SavedJob? _savedJob;
@@ -145,6 +153,7 @@ public partial class MainWindow : Window
         }
 
         _shuttingDown = true;
+        _autoSyncTimer.Stop();
         // No further input while the session is being torn down: a click here would
         // otherwise relaunch the backend that was just stopped.
         IsEnabled = false;
@@ -420,6 +429,7 @@ public partial class MainWindow : Window
 
     private void AddToQueueButton_Click(object sender, RoutedEventArgs e)
     {
+        _autoSyncOwnsGrid = false;
         var selectedTracks = Tracks.Where(track => track.IsSelected).ToList();
         if (_playlist is null || selectedTracks.Count == 0)
         {
@@ -455,82 +465,130 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Enqueues the sources that are due for an unattended sync, and starts the queue.
+    /// Queues the sources that are due for an unattended sync, and runs them when the
+    /// queue and the window are free.
     /// </summary>
     /// <remarks>
-    /// Auto-sync is the ordinary queue with the ordinary sync semantics: each job is
-    /// re-resolved when it runs and only new or unfinished tracks are selected. It only
-    /// runs while nothing else does, and it only runs while the app is open.
+    /// An auto-sync job is the ordinary queue job with the ordinary sync semantics: the
+    /// source is re-resolved when it runs and only new or unfinished tracks are selected.
+    /// What it must never do is act for the user: it does not start jobs the user staged
+    /// and left alone, and it does not take over a track list the user put on screen. In
+    /// those cases the sources are queued and the user is told, and they start the queue
+    /// themselves.
     /// </remarks>
-    private void AutoSyncTick()
+    private async void AutoSyncTick()
     {
-        if (_settings.AutoSyncMinutes <= 0 || _jobRunning || _queueRunning ||
-            _sourceOperationCts is not null || !_uiReady)
+        if (!CanAutoSyncNow() || _autoSyncTickBusy)
         {
             return;
         }
 
-        var busy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var queued in _queue.Items)
-        {
-            busy.Add(queued.SourceUrl);
-        }
-        if (_playlist?.SourceUrl is { Length: > 0 } loaded)
-        {
-            // The grid owns that source; syncing it in the background would fight the user.
-            busy.Add(loaded);
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        IReadOnlyList<SavedJob> due;
+        _autoSyncTickBusy = true;
         try
         {
-            due = AutoSyncScheduler.Due(
-                _library.List(), TimeSpan.FromMinutes(_settings.AutoSyncMinutes), now, busy);
+            var busy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var queued in _queue.Items)
+            {
+                busy.Add(queued.SourceUrl);
+            }
+            if (_playlist?.SourceUrl is { Length: > 0 } loaded)
+            {
+                // The grid owns that source; syncing it in the background would fight the user.
+                busy.Add(loaded);
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            var interval = TimeSpan.FromMinutes(_settings.AutoSyncMinutes);
+            // Reading and deserializing the whole library does not belong on the UI thread.
+            var due = await Task.Run(() => AutoSyncScheduler.Due(_library.List(), interval, now, busy));
+
+            // Everything above ran off the dispatcher, so the gate is checked again.
+            if (due.Count == 0 || !CanAutoSyncNow())
+            {
+                return;
+            }
+
+            var queueWasEmpty = _queue.IsEmpty;
+            var added = 0;
+            foreach (var job in due)
+            {
+                if (!await Task.Run(() => AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now)))
+                {
+                    // Without the stamp the source would be picked again on every tick, and
+                    // a missing entry means the job was deleted while this tick ran.
+                    continue;
+                }
+
+                _queue.Enqueue(new QueuedJob(
+                    string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
+                    job.SourceUrl,
+                    job.SourceType,
+                    job.OutputDirectory,
+                    QueuedJobSettings.From(_settings),
+                    job)
+                {
+                    ResolveSelection = true,
+                });
+                added++;
+            }
+
+            if (added == 0)
+            {
+                return;
+            }
+
+            UpdateQueueUi();
+            var sources = added == 1 ? "1 source" : $"{added} sources";
+            var gridIsFree = _playlist is null || _autoSyncOwnsGrid;
+            if (!queueWasEmpty || !gridIsFree || !CanAutoSyncNow())
+            {
+                // Starting here would also start the jobs the user staged, or replace what
+                // they have on screen. Both are theirs to start.
+                StatusText.Text = queueWasEmpty
+                    ? $"Auto-sync queued {sources} — start the queue when you are ready"
+                    : $"Auto-sync added {sources} to the queue — start the queue when you are ready";
+                return;
+            }
+
+            // Each run reports on itself; the previous run's report is replaced.
+            _queueReport.Clear();
+            _autoSyncRunning = true;
+            _autoSyncOwnsGrid = true;
+            StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
+            try
+            {
+                await RunQueueAsync();
+            }
+            finally
+            {
+                _autoSyncRunning = false;
+            }
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-            return;
+            // An unreadable library must not take the app down from a timer.
         }
-
-        var added = 0;
-        foreach (var job in due)
+        finally
         {
-            try
-            {
-                AutoSyncScheduler.MarkChecked(_library, job.SourceUrl, now);
-            }
-            catch (Exception exception) when (
-                exception is IOException or UnauthorizedAccessException)
-            {
-                // Without the stamp the source would be picked again on the next tick.
-                continue;
-            }
-
-            _queue.Enqueue(new QueuedJob(
-                string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
-                job.SourceUrl,
-                job.SourceType,
-                string.IsNullOrWhiteSpace(job.OutputDirectory)
-                    ? OutputDirectoryBox.Text
-                    : job.OutputDirectory,
-                QueuedJobSettings.From(_settings),
-                job));
-            added++;
+            _autoSyncTickBusy = false;
         }
-
-        if (added == 0)
-        {
-            return;
-        }
-
-        UpdateQueueUi();
-        StatusText.Text = added == 1
-            ? "Auto-sync: checking 1 source for new tracks"
-            : $"Auto-sync: checking {added} sources for new tracks";
-        _ = RunQueueAsync();
     }
+
+    /// <summary>
+    /// Whether an unattended check may run at this moment.
+    /// </summary>
+    /// <remarks>
+    /// Modal windows are excluded because Settings, Library, and Queue all act on the
+    /// state a run would change under them, and a WPF dialog does not stop this timer.
+    /// </remarks>
+    private bool CanAutoSyncNow() =>
+        _settings.AutoSyncMinutes > 0 &&
+        !_jobRunning &&
+        !_queueRunning &&
+        !_shuttingDown &&
+        _sourceOperationCts is null &&
+        OwnedWindows.Count == 0;
 
     private void UpdateQueueUi()
     {
@@ -705,6 +763,13 @@ public partial class MainWindow : Window
             {
                 prepared = await PrepareQueuedJobAsync(job);
                 break;
+            }
+            catch (InvalidOperationException) when (job.ResolveSelection)
+            {
+                // An auto-sync check that found nothing new: the quiet outcome, not a
+                // failure, so it is neither reported nor counted against the retry limit.
+                _activeQueuedJob = null;
+                continue;
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
@@ -1526,6 +1591,8 @@ public partial class MainWindow : Window
 
     private CancellationTokenSource? BeginSourceOperation(string status)
     {
+        // Whatever the user is loading now is theirs, not auto-sync's.
+        _autoSyncOwnsGrid = false;
         if (_sourceOperationCts is not null)
         {
             // A second source request would leave the first one's result to overwrite
@@ -1680,8 +1747,15 @@ public partial class MainWindow : Window
 
     private async void LibraryButton_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new LibraryWindow(_library) { Owner = this };
+        var dialog = new LibraryWindow(_library, _settings.AutoSyncMinutes) { Owner = this };
         var opened = dialog.ShowDialog() == true && dialog.SelectedJob is not null;
+        foreach (var deleted in dialog.DeletedSources)
+        {
+            // A queued job would write the entry back when it runs.
+            _queue.RemoveSource(deleted);
+        }
+
+        UpdateQueueUi();
         ReconcileRepairedJobs(dialog.RepairedSources);
         if (opened)
         {
@@ -1898,8 +1972,13 @@ public partial class MainWindow : Window
         _savedJob = snapshot;
         try
         {
-            _jobStore.Save(_savedJob);
-            _library.Save(_savedJob);
+            if (!_autoSyncRunning)
+            {
+                // Resume is the user's own last job; unattended work must not take it over.
+                _jobStore.Save(_savedJob);
+            }
+
+            _library.SaveProgress(_savedJob);
             ResumeButton.Visibility = Visibility.Visible;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

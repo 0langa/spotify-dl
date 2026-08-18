@@ -61,6 +61,15 @@ public sealed record QueuedJob(
 
     /// <summary>True once the backend session that resolved this job is gone.</summary>
     public bool NeedsResolve => PlaylistId is null || Tracks.Count == 0;
+
+    /// <summary>
+    /// True when the track list is decided by re-resolving the source at run time.
+    /// </summary>
+    /// <remarks>
+    /// An auto-sync job is queued before anyone knows whether the source has anything new,
+    /// so it is allowed to hold a snapshot in which every track is already downloaded.
+    /// </remarks>
+    public bool ResolveSelection { get; init; }
 }
 
 /// <summary>Result of one finished queue job, kept for the end-of-run report.</summary>
@@ -120,7 +129,7 @@ public sealed class DownloadQueue
     public void Enqueue(QueuedJob job)
     {
         ArgumentNullException.ThrowIfNull(job);
-        if (job.SelectedCount == 0)
+        if (!job.ResolveSelection && job.SelectedCount == 0)
         {
             throw new ArgumentException("A queued job needs at least one track", nameof(job));
         }
@@ -134,7 +143,7 @@ public sealed class DownloadQueue
     {
         ArgumentNullException.ThrowIfNull(jobs);
         _jobs.Clear();
-        _jobs.AddRange(jobs.Where(job => job.SelectedCount > 0));
+        _jobs.AddRange(jobs.Where(job => job.ResolveSelection || job.SelectedCount > 0));
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -149,6 +158,20 @@ public sealed class DownloadQueue
         _jobs.RemoveAt(0);
         Changed?.Invoke(this, EventArgs.Empty);
         return job;
+    }
+
+    /// <summary>Drops every pending job for one source, e.g. after it was deleted.</summary>
+    /// <returns>How many jobs were removed.</returns>
+    public int RemoveSource(string sourceUrl)
+    {
+        var removed = _jobs.RemoveAll(job =>
+            string.Equals(job.SourceUrl, sourceUrl, StringComparison.OrdinalIgnoreCase));
+        if (removed > 0)
+        {
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        return removed;
     }
 
     /// <summary>Puts a job back at the head, e.g. when a run is paused before it ran.</summary>

@@ -11,26 +11,35 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     private readonly string _root =
         Path.Combine(Path.GetTempPath(), "playlistdl-tests", Guid.NewGuid().ToString("N"));
 
-    private LibraryStore Store => new(_root);
+    private string LibraryDirectory => Path.Combine(_root, "library");
 
-    private static SavedJob Job(
+    private string MusicDirectory => Path.Combine(_root, "music");
+
+    private LibraryStore Store => new(LibraryDirectory);
+
+    private SavedJob Job(
         string name,
         bool autoSync = true,
-        DateTimeOffset? lastSync = null) => new()
+        DateTimeOffset? lastSync = null,
+        string sourceType = "playlist",
+        string? outputDirectory = null)
+    {
+        Directory.CreateDirectory(MusicDirectory);
+        return new SavedJob
         {
             SourceUrl = $"https://open.spotify.com/playlist/{name}",
             SourceName = name,
-            OutputDirectory = @"C:\music",
+            SourceType = sourceType,
+            OutputDirectory = outputDirectory ?? MusicDirectory,
             AutoSync = autoSync,
             LastAutoSyncUtc = lastSync,
         };
+    }
 
     [Fact]
     public void ASourceThatWasNeverCheckedIsDue()
     {
-        var due = AutoSyncScheduler.Due([Job("mix")], TimeSpan.FromHours(1), Now);
-
-        Assert.Single(due);
+        Assert.Single(AutoSyncScheduler.Due([Job("mix")], TimeSpan.FromHours(1), Now));
     }
 
     [Fact]
@@ -79,6 +88,26 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     }
 
     [Fact]
+    public void AnImportedManifestIsNeverSyncedUnattended()
+    {
+        // Its "source" is a local file that may be gone or on a drive that is not plugged in.
+        var jobs = new[] { Job("manifest", sourceType: "import") };
+
+        Assert.False(AutoSyncScheduler.CanAutoSync(jobs[0]));
+        Assert.Empty(AutoSyncScheduler.Due(jobs, TimeSpan.FromHours(1), Now));
+    }
+
+    [Fact]
+    public void ASourceWhoseOutputFolderIsGoneIsSkipped()
+    {
+        // Downloading would recreate the tree somewhere the user cannot see.
+        var jobs = new[] { Job("away", outputDirectory: Path.Combine(_root, "unplugged")) };
+
+        Assert.False(AutoSyncScheduler.CanAutoSync(jobs[0]));
+        Assert.Empty(AutoSyncScheduler.Due(jobs, TimeSpan.FromHours(1), Now));
+    }
+
+    [Fact]
     public void TheLongestWaitingSourcesGoFirstAndOneTickIsBounded()
     {
         var jobs = new[]
@@ -120,12 +149,26 @@ public sealed class AutoSyncSchedulerTests : IDisposable
         var job = Job("mix");
         Store.Save(job);
 
-        AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now);
+        Assert.True(AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now));
 
         var reloaded = Store.Load(job.SourceUrl)!;
         Assert.Equal(Now, reloaded.LastAutoSyncUtc);
         Assert.True(reloaded.AutoSync);
         Assert.Empty(AutoSyncScheduler.Due([reloaded], TimeSpan.FromHours(1), Now));
+    }
+
+    [Fact]
+    public void MarkCheckedLeavesTheJobsOwnUpdatedTimeAlone()
+    {
+        var job = Job("mix");
+        Store.Save(job);
+        var updatedAt = Store.Load(job.SourceUrl)!.UpdatedAt;
+
+        AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now);
+
+        // A check that found nothing is not a change to the job, so it must not float to
+        // the top of the library list or claim a fresh update.
+        Assert.Equal(updatedAt, Store.Load(job.SourceUrl)!.UpdatedAt);
     }
 
     [Fact]
@@ -147,21 +190,72 @@ public sealed class AutoSyncSchedulerTests : IDisposable
     }
 
     [Fact]
-    public void MarkCheckedDoesNotRecreateADeletedJob()
+    public void MarkCheckedReportsFailureForAJobThatIsGone()
     {
         var job = Job("mix");
 
-        AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now);
-
+        Assert.False(AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now));
         Assert.Null(Store.Load(job.SourceUrl));
     }
 
     [Fact]
-    public void EveryOfferedIntervalIsUsable()
+    public void AFullyDownloadedSourceCanStillBeQueuedForAutoSync()
     {
-        // The settings list and the scheduler must agree about what "off" means.
-        Assert.Equal(0, AutoSyncScheduler.Intervals[0]);
-        Assert.All(AutoSyncScheduler.Intervals.Skip(1), minutes => Assert.True(minutes > 0));
+        // The steady state of a synced source: every track complete. The queue has to take
+        // it, because whether there is anything new is only known once it is re-resolved.
+        var job = Job("mix");
+        job.Tracks.Add(new SavedTrack { Id = "done", IsComplete = true, IsSelected = false });
+        var queue = new DownloadQueue();
+        var queued = new QueuedJob(
+            job.SourceName,
+            job.SourceUrl,
+            job.SourceType,
+            job.OutputDirectory,
+            QueuedJobSettings.From(new AppSettings()),
+            job)
+        {
+            ResolveSelection = true,
+        };
+
+        queue.Enqueue(queued);
+
+        Assert.Equal(0, queued.SelectedCount);
+        Assert.Single(queue.Items);
+        // The same job without the flag is still refused, so nothing else got looser.
+        Assert.Throws<ArgumentException>(() => queue.Enqueue(queued with { ResolveSelection = false }));
+    }
+
+    [Fact]
+    public void SavingProgressKeepsTheKeepInSyncFlagAndTheLastCheck()
+    {
+        var job = Job("mix");
+        Store.Save(job);
+        AutoSyncScheduler.MarkChecked(Store, job.SourceUrl, Now);
+
+        // What the download grid writes back knows nothing about either field.
+        Store.SaveProgress(SavedJobSnapshot.Create(
+            job.SourceUrl,
+            job.SourceName,
+            job.SourceType,
+            job.OutputDirectory,
+            [new TrackItem { Id = "one", Status = "Done" }]));
+
+        var reloaded = Store.Load(job.SourceUrl)!;
+        Assert.True(reloaded.AutoSync);
+        Assert.Equal(Now, reloaded.LastAutoSyncUtc);
+        Assert.Single(reloaded.Tracks);
+    }
+
+    [Fact]
+    public void TurningKeepInSyncOffIsNotUndoneBySavingProgress()
+    {
+        var job = Job("mix", autoSync: false);
+        Store.Save(job);
+
+        Store.SaveProgress(SavedJobSnapshot.Create(
+            job.SourceUrl, job.SourceName, job.SourceType, job.OutputDirectory, []));
+
+        Assert.False(Store.Load(job.SourceUrl)!.AutoSync);
     }
 
     public void Dispose()

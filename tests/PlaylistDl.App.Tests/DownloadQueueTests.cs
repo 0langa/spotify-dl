@@ -167,6 +167,24 @@ public sealed class DownloadQueueTests
     }
 
     [Fact]
+    public void RemoveSourceDropsEveryPendingJobForThatSource()
+    {
+        var queue = new DownloadQueue();
+        queue.Enqueue(Job("first"));
+        queue.Enqueue(Job("second"));
+        var url = queue.Items[0].SourceUrl;
+        var changes = 0;
+        queue.Changed += (_, _) => changes++;
+
+        Assert.Equal(1, queue.RemoveSource(url.ToUpperInvariant()));
+        Assert.Equal(1, changes);
+        Assert.Equal(["second"], queue.PendingNames());
+        // Nothing to remove must not raise a change.
+        Assert.Equal(0, queue.RemoveSource(url));
+        Assert.Equal(1, changes);
+    }
+
+    [Fact]
     public void RejectsEmptyTrackList()
     {
         var queue = new DownloadQueue();

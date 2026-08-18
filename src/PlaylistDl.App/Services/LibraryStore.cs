@@ -153,6 +153,56 @@ public sealed class LibraryStore
         File.Move(temporaryPath, path, overwrite: true);
     }
 
+    /// <summary>
+    /// Saves progress from the download grid without losing the per-source preferences
+    /// the grid never carries.
+    /// </summary>
+    /// <remarks>
+    /// The grid snapshot is built from the track list alone, so writing it as-is would
+    /// clear "keep in sync" and its last check on every checkpoint.
+    /// </remarks>
+    public void SaveProgress(SavedJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (Load(job.SourceUrl) is { } stored)
+        {
+            job.AutoSync = stored.AutoSync;
+            job.LastAutoSyncUtc = stored.LastAutoSyncUtc;
+        }
+
+        Save(job);
+    }
+
+    /// <summary>
+    /// Stamps when auto-sync last looked at a source, without touching anything else.
+    /// </summary>
+    /// <remarks>
+    /// UpdatedAt is deliberately left alone: an unattended check is not a change to the
+    /// job, and bumping it would reorder the library list and claim work that never
+    /// happened.
+    /// </remarks>
+    /// <returns>False when there was no entry to stamp, or it could not be written.</returns>
+    public bool RecordAutoSyncCheck(string sourceUrl, DateTimeOffset when)
+    {
+        var job = Load(sourceUrl);
+        if (job is null)
+        {
+            return false;
+        }
+
+        job.LastAutoSyncUtc = when;
+        try
+        {
+            File.WriteAllText(PathFor(sourceUrl), JsonSerializer.Serialize(job, _jsonOptions));
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     public void Delete(string sourceUrl)
     {
         var path = PathFor(sourceUrl);

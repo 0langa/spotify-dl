@@ -21,10 +21,18 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
             "search" => "Search",
             _ => "Playlist",
         };
+        var subtitle = $"{typeLabel} · {job.SourceUrl}";
+        if (job.AutoSync)
+        {
+            subtitle += job.LastAutoSyncUtc is { } checkedAt
+                ? $" · keeps in sync, last checked {checkedAt.LocalDateTime:g}"
+                : " · keeps in sync";
+        }
+
         return new LibraryEntry(
             job,
             string.IsNullOrWhiteSpace(job.SourceName) ? job.SourceUrl : job.SourceName,
-            $"{typeLabel} · {job.SourceUrl}",
+            subtitle,
             $"{done}/{job.Tracks.Count} done",
             job.UpdatedAt.LocalDateTime.ToString("g"));
     }
@@ -33,16 +41,19 @@ public sealed record LibraryEntry(SavedJob Job, string Name, string Subtitle, st
 public partial class LibraryWindow : Window
 {
     private readonly LibraryStore _library;
+    private readonly int _autoSyncMinutes;
     private readonly HashSet<string> _repaired = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _deleted = new(StringComparer.OrdinalIgnoreCase);
     private bool _checking;
     private bool _closed;
     private bool _repairing;
     private bool _closeRequested;
 
-    public LibraryWindow(LibraryStore library)
+    public LibraryWindow(LibraryStore library, int autoSyncMinutes = 0)
     {
         InitializeComponent();
         _library = library;
+        _autoSyncMinutes = autoSyncMinutes;
         Reload();
     }
 
@@ -53,6 +64,9 @@ public partial class LibraryWindow : Window
 
     /// <summary>Sources whose library entry this window changed, for the caller to refresh.</summary>
     public IReadOnlyCollection<string> RepairedSources => _repaired;
+
+    /// <summary>Sources this window removed, so their queued work can be dropped too.</summary>
+    public IReadOnlyCollection<string> DeletedSources => _deleted;
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
@@ -111,6 +125,19 @@ public partial class LibraryWindow : Window
 
         var entry = Selected;
         var wanted = AutoSyncToggle.IsChecked == true;
+        if (wanted && !AutoSyncScheduler.CanAutoSync(entry.Job))
+        {
+            AutoSyncToggle.IsChecked = false;
+            HealthPanel.Visibility = Visibility.Visible;
+            HealthText.Text = string.Equals(
+                entry.Job.SourceType, "import", StringComparison.OrdinalIgnoreCase)
+                ? $"{entry.Name}: an imported manifest cannot be synced on its own, " +
+                    "because its source is a file on this machine."
+                : $"{entry.Name}: its output folder {entry.Job.OutputDirectory} is not " +
+                    "available, so it cannot be synced on its own.";
+            return;
+        }
+
         try
         {
             // Written on the entry as it is on disk: this window may have been open for a
@@ -131,8 +158,11 @@ public partial class LibraryWindow : Window
 
         HealthPanel.Visibility = Visibility.Visible;
         HealthText.Text = wanted
-            ? $"{entry.Name}: checked for new tracks while the app is open, " +
-                "on the interval set in Settings."
+            ? _autoSyncMinutes > 0
+                ? $"{entry.Name}: checked for new tracks every " +
+                    $"{IntervalText(_autoSyncMinutes)} while the app is open."
+                : $"{entry.Name}: marked to keep in sync. Auto-sync is off in Settings, " +
+                    "so nothing is checked until an interval is chosen there."
             : $"{entry.Name}: no longer checked on its own.";
     }
 
@@ -463,6 +493,15 @@ public partial class LibraryWindow : Window
         }
     }
 
+    private static string IntervalText(int minutes) => minutes switch
+    {
+        < 60 => $"{minutes} minutes",
+        60 => "hour",
+        < 1440 => $"{minutes / 60} hours",
+        1440 => "day",
+        _ => $"{minutes / 1440} days",
+    };
+
     private void DeleteButton_Click(object sender, RoutedEventArgs e)
     {
         if (Selected is null || _checking)
@@ -478,6 +517,7 @@ public partial class LibraryWindow : Window
             MessageBoxImage.Question);
         if (confirmed == MessageBoxResult.Yes)
         {
+            _deleted.Add(Selected.Job.SourceUrl);
             _library.Delete(Selected.Job.SourceUrl);
             Reload();
         }

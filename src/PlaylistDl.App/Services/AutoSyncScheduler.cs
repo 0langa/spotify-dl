@@ -1,3 +1,4 @@
+using System.IO;
 using PlaylistDl.App.Models;
 
 namespace PlaylistDl.App.Services;
@@ -16,8 +17,39 @@ public static class AutoSyncScheduler
     /// <summary>How many sources one tick may enqueue, so a stale library is not a burst.</summary>
     public const int MaxPerTick = 3;
 
-    /// <summary>Intervals the user can pick, in minutes; 0 turns auto-sync off.</summary>
-    public static readonly IReadOnlyList<int> Intervals = [0, 30, 60, 360, 1440];
+    /// <summary>
+    /// Whether a source can be checked unattended at all.
+    /// </summary>
+    /// <remarks>
+    /// An imported manifest is a local file that may be gone or on a drive that is not
+    /// plugged in, and a job whose output folder has disappeared would have its tree
+    /// recreated somewhere the user cannot see. Neither is safe to act on with nobody
+    /// watching.
+    /// </remarks>
+    public static bool CanAutoSync(SavedJob job)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (string.IsNullOrWhiteSpace(job.SourceUrl) ||
+            string.Equals(job.SourceType, "import", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(job.OutputDirectory) && FolderExists(job.OutputDirectory);
+    }
+
+    private static bool FolderExists(string path)
+    {
+        try
+        {
+            return Directory.Exists(path);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// The jobs that should be synced now, oldest check first.
@@ -45,7 +77,7 @@ public static class AutoSyncScheduler
         return
         [
             .. jobs
-                .Where(job => job.AutoSync && !string.IsNullOrWhiteSpace(job.SourceUrl))
+                .Where(job => job.AutoSync && CanAutoSync(job))
                 .Where(job => !busy.Contains(job.SourceUrl))
                 .Where(job => IsDue(job, interval, now))
                 // A job that has never been checked sorts first, then the longest waiting.
@@ -67,17 +99,15 @@ public static class AutoSyncScheduler
     }
 
     /// <summary>Records that a source was checked, whatever the sync then found.</summary>
-    public static void MarkChecked(LibraryStore library, string sourceUrl, DateTimeOffset now)
+    /// <returns>
+    /// False when the entry is gone or could not be written. The caller must not queue a
+    /// source it could not stamp: it would come back due on every tick.
+    /// </returns>
+    public static bool MarkChecked(LibraryStore library, string sourceUrl, DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(library);
-        if (library.Load(sourceUrl) is not { } job)
-        {
-            return;
-        }
-
-        // Written on the entry as it is on disk right now: the sync itself rewrites the
-        // same file when it finishes, and the snapshot this started from may be older.
-        job.LastAutoSyncUtc = now;
-        library.Save(job);
+        // Stamped on the entry as it is on disk right now, and without touching UpdatedAt:
+        // the sync itself rewrites the same file when it finishes.
+        return library.RecordAutoSyncCheck(sourceUrl, now);
     }
 }
