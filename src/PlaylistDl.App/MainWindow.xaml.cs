@@ -273,8 +273,14 @@ public partial class MainWindow : Window
 
     private void Track_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // Ticking a row is the user taking the list back from an unattended run.
-        _autoSyncOwnsGrid = false;
+        // Only what the user can change takes the list back from an unattended run. The
+        // run writes Progress, Status, OutputPath, and ErrorText on its own rows, so
+        // clearing on those would end its ownership with the first downloaded track.
+        if (e.PropertyName is nameof(TrackItem.IsSelected) or nameof(TrackItem.SourceOverride))
+        {
+            _autoSyncOwnsGrid = false;
+        }
+
         if (e.PropertyName == nameof(TrackItem.IsSelected) && !_bulkSelectionUpdate)
         {
             UpdateSelectionUi();
@@ -428,6 +434,7 @@ public partial class MainWindow : Window
             {
                 // Each run reports on itself; the previous run's report is replaced.
                 _queueReport.Clear();
+                _queueUpToDate = 0;
             }
             await RunQueueAsync();
             return;
