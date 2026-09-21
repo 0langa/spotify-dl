@@ -19,7 +19,8 @@ try {
 
         # spotDL 4.5.0 pins an obsolete FastAPI/Starlette server stack. Playlist DL never
         # starts that server, and release builds explicitly exclude fastapi, starlette,
-        # and uvicorn. smoke-frozen-backend.ps1 verifies those modules remain absent.
+        # uvicorn, and anyio (used only by FastAPI/Starlette; FastAPI 0.103 caps it below 4).
+        # The frozen runtime check refuses to run if any of them become bundled.
         $excludedServerAdvisories = @(
             'PYSEC-2024-38',
             'PYSEC-2026-161',
@@ -28,7 +29,9 @@ try {
             'PYSEC-2026-1943',
             'PYSEC-2026-1941',
             'PYSEC-2026-2281',
-            'PYSEC-2026-2280'
+            'PYSEC-2026-2280',
+            'CVE-2026-63374',
+            'CVE-2026-64847'
         )
         $ignoreArguments = $excludedServerAdvisories | ForEach-Object { '--ignore-vuln'; $_ }
         uvx pip-audit==2.10.1 -r $requirements.FullName @ignoreArguments

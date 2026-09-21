@@ -82,6 +82,7 @@ try {
         --exclude-module fastapi `
         --exclude-module starlette `
         --exclude-module uvicorn `
+        --exclude-module anyio `
         --distpath $backendDist `
         --workpath $pyinstallerWork `
         --specpath $pyinstallerWork `

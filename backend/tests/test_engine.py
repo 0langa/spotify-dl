@@ -24,7 +24,7 @@ import sys
 
 class BlockServerModules(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.partition('.')[0] in {'fastapi', 'starlette', 'uvicorn'}:
+        if fullname.partition('.')[0] in {'fastapi', 'starlette', 'uvicorn', 'anyio'}:
             raise ModuleNotFoundError(fullname)
         return None
 

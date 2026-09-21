@@ -206,7 +206,7 @@ _DIAGNOSE_ENDPOINTS = (
     "https://www.youtube.com/",
 )
 
-_EXCLUDED_SERVER_MODULES = ("fastapi", "starlette", "uvicorn")
+_EXCLUDED_SERVER_MODULES = ("fastapi", "starlette", "uvicorn", "anyio")
 
 
 def find_bundled_server_modules() -> list[str]:
