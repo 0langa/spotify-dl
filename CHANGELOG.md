@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Security
+
+- Updated soupsieve from 2.8.4 to 2.9.2 (CVE-2026-85999, CVE-2026-86000).
+- AnyIO 3.7.1 (CVE-2026-63374, CVE-2026-64847) is used only by the unused FastAPI/Starlette server stack that spotDL 4.5.0 pins, and FastAPI 0.103 caps it below 4. Frozen builds now exclude AnyIO with the rest of that stack, the runtime check refuses a build that bundles it, and the dependency audit ignores only those two advisories.
+
 ## 2.6.0 - 2026-08-18
 
 ### Added
