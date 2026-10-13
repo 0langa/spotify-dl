@@ -52,8 +52,10 @@ NAMING_PRESETS = {
     "album_track_title": "{album-artist}/{album}/{track-number} - {title}.{output-ext}",
 }
 
-# Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes.
-_FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+# Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes. The text
+# quotes the track ("No results found for song: Artist - Bassline"), so needles short
+# enough to occur inside a word or an id are anchored at a word or number boundary.
+_FAILURE_PATTERNS: tuple[tuple[str, tuple[str | re.Pattern[str], ...]], ...] = (
     (
         "integrity_failed",
         ("integrity check failed",),
@@ -63,7 +65,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "sign in to confirm",
             "please sign in",
-            "429",
+            re.compile(r"(?<![a-z0-9])429(?![a-z0-9])"),
             "too many requests",
             "read timed out",
             "urlopen error",
@@ -79,7 +81,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "failed to complete request",
             "connection refused",
             "getaddrinfo failed",
-            "ssl",
+            re.compile(r"(?<![a-z])ssl"),
         ),
     ),
     (
@@ -540,7 +542,10 @@ def classify_failure(error_text: str | None) -> str:
     """Bucket raw downloader error text into an actionable failure class."""
     lowered = (error_text or "").lower()
     for failure_class, needles in _FAILURE_PATTERNS:
-        if any(needle in lowered for needle in needles):
+        if any(
+            needle.search(lowered) if isinstance(needle, re.Pattern) else needle in lowered
+            for needle in needles
+        ):
             return failure_class
     return "unknown"
 

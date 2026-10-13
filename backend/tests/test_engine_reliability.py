@@ -119,6 +119,14 @@ def test_track_resolution_retries_only_track_request() -> None:
         ("AudioProviderError: YT-DLP download error", "source_unavailable"),
         ("something entirely different", "unknown"),
         (None, "unknown"),
+        ("Caused by SSLError(SSLCertVerificationError(1, 'verify failed'))", "network"),
+        ("Unable to download API page: [SSL: CERTIFICATE_VERIFY_FAILED]", "network"),
+        ("_ssl.c:1006: The handshake operation timed out", "network"),
+        ("HTTP status 429 from the provider", "youtube_blocked"),
+        # The error text quotes the track, so a title or id must not pick the class.
+        ("LookupError: No results found for song: DJ - Bassline Junkie", "no_match"),
+        ("LookupError: No results found for song: Rammstein - Russland", "no_match"),
+        ("https://open.spotify.com/track/4Hb429Qx - LookupError: No results found", "no_match"),
     ],
 )
 def test_classify_failure_buckets(text: str | None, expected: str) -> None:
