@@ -42,6 +42,13 @@ public partial class MainWindow : Window
     private readonly DownloadQueue _queue = new();
     private bool _queueRunning;
 
+    /// <summary>Cancel was pressed while the queue was preparing a job, not downloading one.</summary>
+    /// <remarks>
+    /// The backend forgets a cancel that arrives before a job starts, by design, so the
+    /// queue has to stop itself before it hands the backend the job it was preparing.
+    /// </remarks>
+    private bool _queueCancelRequested;
+
     /// <summary>Checks once a minute whether a source marked "keep in sync" is due.</summary>
     private readonly DispatcherTimer _autoSyncTimer = new() { Interval = TimeSpan.FromMinutes(1) };
 
@@ -435,6 +442,7 @@ public partial class MainWindow : Window
                 // Each run reports on itself; the previous run's report is replaced.
                 _queueReport.Clear();
                 _queueUpToDate = 0;
+                _queueCancelRequested = false;
             }
             await RunQueueAsync();
             return;
@@ -604,6 +612,7 @@ public partial class MainWindow : Window
             // Each run reports on itself; the previous run's report is replaced.
             _queueReport.Clear();
             _queueUpToDate = 0;
+            _queueCancelRequested = false;
             _autoSyncOwnsGrid = true;
             StatusText.Text = $"Auto-sync: checking {sources} for new tracks";
             await RunQueueAsync();
@@ -811,6 +820,12 @@ public partial class MainWindow : Window
         var preparationFailures = 0;
         while (true)
         {
+            if (_queueCancelRequested)
+            {
+                StopCancelledQueueRun();
+                return;
+            }
+
             var job = _queue.DequeueNext();
             if (job is null)
             {
@@ -826,6 +841,14 @@ public partial class MainWindow : Window
             try
             {
                 prepared = await PrepareQueuedJobAsync(job);
+                if (_queueCancelRequested)
+                {
+                    // It never started, so it stays queued with the jobs behind it.
+                    _queue.Requeue(job);
+                    StopCancelledQueueRun();
+                    return;
+                }
+
                 break;
             }
             catch (NothingToDownloadException) when (job.ResolveSelection)
@@ -935,9 +958,18 @@ public partial class MainWindow : Window
         };
     }
 
+    private void StopCancelledQueueRun()
+    {
+        FinishQueueRun();
+        StatusText.Text = _queue.IsEmpty
+            ? "Queue cancelled"
+            : $"Queue cancelled — {_queue.Count} queued jobs kept";
+    }
+
     private void FinishQueueRun()
     {
         _queueRunning = false;
+        _queueCancelRequested = false;
         _activeQueuedJob = null;
         UpdateSourceIntakeAvailability();
         UpdateSelectionUi();
@@ -1074,6 +1106,17 @@ public partial class MainWindow : Window
                 SaveCurrentJob();
                 await _backend.RestartAsync();
                 InvalidateBackendSession("Source operation cancelled — analyze or resume a source to continue");
+                return;
+            }
+
+            if (_queueRunning && !_jobRunning)
+            {
+                // The queue is still preparing its next job. A cancel sent to the backend
+                // now would be forgotten the moment that job started, and the rest of the
+                // queue would run as well.
+                _queueCancelRequested = true;
+                CancelButton.IsEnabled = false;
+                StatusText.Text = "Cancelling the queue — it stops before the next job starts";
                 return;
             }
 
