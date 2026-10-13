@@ -111,7 +111,6 @@ Minimal JSON:
 
 Build freezes Python backend, excludes unused HTTP-server modules, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use. Release directory also contains checksummed license and third-party notices.
 
-See [ROADMAP.md](ROADMAP.md) for current development priorities and standing release gates.
 
 ## License
 
