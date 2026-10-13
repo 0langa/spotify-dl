@@ -9,6 +9,14 @@
 - Updated pymongo from 4.17.0 to 4.18.2 (CVE-2026-88029, CVE-2026-96747, CVE-2026-96748, CVE-2026-96749). Playlist DL never connects to MongoDB; SpotAPI imports the driver for an optional saver, so frozen builds bundle it.
 - AnyIO 3.7.1 (CVE-2026-63374, CVE-2026-64847) is used only by the unused FastAPI/Starlette server stack that spotDL 4.5.0 pins, and FastAPI 0.103 caps it below 4. Frozen builds now exclude AnyIO with the rest of that stack, the runtime check refuses a build that bundles it, and the dependency audit ignores only those two advisories.
 
+### Fixed
+
+- A track that is already in the output folder under another name — renamed by hand, or saved under an earlier naming preset — is reported as done with that file instead of failing as "the file was not saved" and skipping every alternate source. If that file fails verification it is kept, and the track is downloaded again.
+- With the Album Artist / Album / Title layout, an album or artist name that ends in a space once a character such as "?" is dropped ("Qui es-tu ?") no longer makes every track of the album fail. Control characters in names, and artist or album folders named like a Windows device ("Con", "Aux"), are made valid too.
+- A failed match for a track whose name contains "ssl" or "429" ("Bassline", "Russland") is no longer reported as a network or rate-limit failure, so alternate-source recovery runs and the right hint is shown.
+- Cancel while the queue is preparing its next job now stops the queue. The cancel used to be lost: the job started anyway, and the rest of the queue ran after it.
+- A failed source search or network diagnosis during a download no longer makes the window treat the download as stopped.
+
 ## 2.6.0 - 2026-08-18
 
 ### Added
