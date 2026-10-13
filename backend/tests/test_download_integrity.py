@@ -245,3 +245,102 @@ def test_an_integrity_verdict_survives_provider_error_attribution(
     record = _record(integrity_env["events"])
     assert record["error_class"] == "integrity_failed"
     assert "integrity check failed" in record["error"]
+
+
+class _DuplicateAwareDownloader(_FakeDownloader):
+    """spotDL's skip for a track it already found under another name in the output folder.
+
+    spotDL then reports the path it would have written, which does not exist, instead of
+    the file it found; only once that file is no longer known does it download again.
+    """
+
+    def __init__(self, settings: dict[str, Any]) -> None:
+        super().__init__(settings)
+        self.known_songs: dict[str, list[Path]] = {}
+        self.output = Path(settings["output"]).parent
+
+    def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+        results = []
+        for song in batch:
+            target = self.output / f"{song.list_position:02d} - Artist - {song.name}.mp3"
+            if any(path.exists() for path in self.known_songs.get(song.url, [])):
+                results.append((song, target))
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"fresh-audio")
+            results.append((song, target))
+        return results
+
+
+def _install_duplicate(
+    monkeypatch: pytest.MonkeyPatch, url: str, existing: Path
+) -> list[_DuplicateAwareDownloader]:
+    created: list[_DuplicateAwareDownloader] = []
+
+    def build(settings: dict[str, Any]) -> _DuplicateAwareDownloader:
+        downloader = _DuplicateAwareDownloader(settings)
+        downloader.known_songs = {url: [existing]}
+        created.append(downloader)
+        return downloader
+
+    monkeypatch.setattr(engine_module, "Downloader", build)
+    return created
+
+
+def test_a_track_already_saved_under_another_name_reports_that_file(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renamed file is found by its tags; it must not read as a failed download."""
+    engine: Engine = integrity_env["engine"]
+    renamed = Path(integrity_env["out"]) / "My Mix" / "renamed by the user.mp3"
+    renamed.parent.mkdir(parents=True)
+    renamed.write_bytes(b"audio-bytes")
+    _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", renamed)
+    searches: list[Any] = []
+    monkeypatch.setattr(
+        Engine, "search_sources", staticmethod(lambda *args, **kwargs: searches.append(args) or [])
+    )
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["verified"] is True
+    assert record["path"] == str(renamed)
+    assert searches == []
+
+
+def test_an_unusable_file_found_under_another_name_is_kept_and_downloaded_again(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    created = _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda *args, **kwargs: [
+                {
+                    "url": "https://music.youtube.com/watch?v=alt",
+                    "title": "One",
+                    "artists": ["Artist"],
+                    "album": "Album",
+                    "duration_seconds": 200,
+                    "result_type": "song",
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", integrity_env["out"], retries=0)
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["path"] != str(stub)
+    # The user's own copy is never deleted, only no longer offered to the downloader.
+    assert stub.read_bytes() == b"x"
+    assert created[0].known_songs == {}
