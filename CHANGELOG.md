@@ -5,6 +5,8 @@
 ### Security
 
 - Updated soupsieve from 2.8.4 to 2.9.2 (CVE-2026-85999, CVE-2026-86000).
+- Updated urllib3 from 2.7.0 to 2.8.0 (CVE-2026-97687, CVE-2026-97688, CVE-2026-97689).
+- Updated pymongo from 4.17.0 to 4.18.2 (CVE-2026-88029, CVE-2026-96747, CVE-2026-96748, CVE-2026-96749). Playlist DL never connects to MongoDB; SpotAPI imports the driver for an optional saver, so frozen builds bundle it.
 - AnyIO 3.7.1 (CVE-2026-63374, CVE-2026-64847) is used only by the unused FastAPI/Starlette server stack that spotDL 4.5.0 pins, and FastAPI 0.103 caps it below 4. Frozen builds now exclude AnyIO with the rest of that stack, the runtime check refuses a build that bundles it, and the dependency audit ignores only those two advisories.
 
 ## 2.6.0 - 2026-08-18
