@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 from playlistdl_backend import __version__
 from playlistdl_backend.bridge import Bridge, format_exception
@@ -210,3 +214,34 @@ def test_start_arms_each_job_so_a_cancelled_job_does_not_block_the_next() -> Non
 
     assert len(observed) == 2, observed
     assert observed[1] is False, "the second job started with the previous cancel still armed"
+
+
+def test_the_backend_process_reads_and_writes_utf8_on_any_code_page(tmp_path: Path) -> None:
+    """The app talks UTF-8 over the pipes; Windows defaults them to the ANSI code page."""
+    folder = tmp_path / "Björk 日本"
+    folder.mkdir()
+    manifest = folder / "mix ✓.csv"
+    manifest.write_text("title,artist\nJóga,Björk\n", encoding="utf-8")
+    request = {"id": "import", "type": "import_manifest", "path": str(manifest)}
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in ("PYTHONIOENCODING", "PYTHONUTF8")
+    }
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "playlistdl_backend"],
+        input=(json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"),
+        capture_output=True,
+        env=environment,
+        check=False,
+        # A cold spotDL import is slow on a loaded CI runner; see test_engine.py.
+        timeout=180,
+    )
+
+    lines = completed.stdout.decode("utf-8").splitlines()
+    messages = [json.loads(line) for line in lines if line.startswith("{")]
+    resolved = [message for message in messages if message["type"] == "playlist_resolved"]
+    assert resolved, messages
+    assert resolved[0]["playlist"]["name"] == "mix ✓"
+    assert resolved[0]["playlist"]["tracks"][0]["title"] == "Jóga"
