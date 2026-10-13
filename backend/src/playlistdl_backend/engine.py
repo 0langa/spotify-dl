@@ -29,7 +29,7 @@ from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.manifest import load_manifest
 from playlistdl_backend.models import PlaylistDto, TrackDto
-from playlistdl_backend.playlist_file import sanitize_filename, write_m3u8
+from playlistdl_backend.playlist_file import sanitize_filename, windows_safe_path, write_m3u8
 
 logger = logging.getLogger(__name__)
 
@@ -712,9 +712,42 @@ spotdl_downloader_module.reinit_song = reinitialize_song_resilient
 _OUTPUT_SUFFIX_ATTRIBUTE = "_playlistdl_output_suffix"
 
 
+def _template_root_parts(template: str) -> int:
+    """Count the leading parts of an output template that hold no placeholder."""
+    parts = Path(template).parts
+    count = len(parts)
+    while count and "{" in parts[count - 1]:
+        count -= 1
+    return count
+
+
+def create_output_path(
+    song: Song,
+    template: str,
+    file_extension: str,
+    restrict: str | None = None,
+    short: bool = False,
+    file_name_length: int | None = None,
+) -> Path:
+    """Return spotDL's path for one song, made valid on Windows below the output folder.
+
+    Every place that predicts or writes a track's file goes through here, so the reuse,
+    collision, and playlist-file logic always agree with the downloader.
+    """
+    path = spotdl_create_file_name(
+        song=song,
+        template=template,
+        file_extension=file_extension,
+        restrict=restrict,
+        short=short,
+        file_name_length=file_name_length,
+    )
+    return windows_safe_path(path, _template_root_parts(template))
+
+
 def _create_file_name_with_collision_suffix(*args: Any, **kwargs: Any) -> Path:
     """Preserve selected naming preset while disambiguating colliding tracks."""
-    path = spotdl_create_file_name(*args, **kwargs)
+    path = create_output_path(*args, **kwargs)
     song = kwargs.get("song") or args[0]
     suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
     return path.with_name(f"{path.stem}{suffix}{path.suffix}") if suffix else path
@@ -776,7 +809,7 @@ def _forget_known_song(downloader: Downloader, song: Song) -> None:
 
 def _output_path_for(song: Song, output_template: str, audio_format: str) -> Path:
     """Return the file this job would write for one song, collision suffix included."""
-    base_path = spotdl_create_file_name(
+    base_path = create_output_path(
         song=song,
         template=output_template,
         file_extension=audio_format,
@@ -823,7 +856,7 @@ def assign_unique_output_suffixes(
     groups: dict[str, list[tuple[Song, Path]]] = {}
     for song in songs:
         setattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "")
-        base_path = spotdl_create_file_name(
+        base_path = create_output_path(
             song=song,
             template=output_template,
             file_extension=audio_format,
@@ -1963,7 +1996,7 @@ class Engine:
         for index, song in enumerate(collection):
             for template in templates:
                 try:
-                    base_path = spotdl_create_file_name(
+                    base_path = create_output_path(
                         song=song,
                         template=template,
                         file_extension=audio_format,
