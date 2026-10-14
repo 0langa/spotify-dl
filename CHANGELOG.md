@@ -11,9 +11,9 @@
 
 ### Fixed
 
-- A track that is already in the output folder under another name — renamed by hand, or saved under an earlier naming preset — is reported as done with that file instead of failing as "the file was not saved" and skipping every alternate source. If that file fails verification it is kept, and the track is downloaded again.
+- A track that is already in the output folder under another name — renamed by hand, or saved under an earlier naming preset — is reported as done with that file instead of failing as "the file was not saved" and skipping every alternate source. Every such copy in the requested format is verified in turn; when none passes, the copies are kept and the track is downloaded again.
 - With the Album Artist / Album / Title layout, an album or artist name that ends in a space once a character such as "?" is dropped ("Qui es-tu ?") no longer makes every track of the album fail. Control characters in names, and artist or album folders named like a Windows device ("Con", "Aux"), are made valid too.
-- A failed match for a track whose name contains "ssl" or "429" ("Bassline", "Russland") is no longer reported as a network or rate-limit failure, so alternate-source recovery runs and the right hint is shown.
+- A track's own name no longer decides how its failure is classified. A failed match for "Bassline", "Russland" or "Too Many Requests" was reported as a network or rate-limit failure, so alternate-source recovery was skipped and the wrong hint was shown.
 - Cancel while the queue is preparing its next job now stops the queue. The cancel used to be lost: the job started anyway, and the rest of the queue ran after it.
 - A failed source search or network diagnosis during a download no longer makes the window treat the download as stopped.
 
