@@ -372,6 +372,55 @@ def test_every_copy_found_under_another_name_is_tried_before_downloading_again(
     assert created[0].known_songs != {}
 
 
+def test_a_track_whose_copies_are_all_unusable_is_downloaded_from_its_own_source(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rejecting the copies must not leave the track to alternate sources alone.
+
+    Retries only repeat network failures, and the alternate search can find nothing, so
+    the track would fail on every run for as long as the copy stays in the folder.
+    """
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    created = _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+    # integrity_env's alternate search finds nothing.
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["fallback_used"] is False
+    assert Path(record["path"]).read_bytes() == b"fresh-audio"
+    assert stub.read_bytes() == b"x"
+    assert created[0].known_songs == {}
+
+
+def test_a_copy_found_for_a_hand_picked_source_must_still_match_the_track_length(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the hand-picked download may differ in length; a copy found on disk is not it."""
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    # The stub holds 5 s of a 200 s track; the live version picked by hand runs 15 min.
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 900.0, "ok")
+    live = "https://www.youtube.com/watch?v=live"
+
+    engine.download("job", integrity_env["out"], source_overrides={"id-1": live})
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["path"] != str(stub)
+    assert Path(record["path"]).read_bytes() == b"fresh-audio"
+    assert record["source_url"] == live
+    assert stub.read_bytes() == b"x"
+
+
 def _ffprobe_answer(
     monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stdout: str = "", stderr: str = ""
 ) -> list[list[str]]:

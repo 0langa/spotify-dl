@@ -1670,6 +1670,7 @@ class Engine:
                     track_id = track_key(song)
                     results_by_id[track_id] = self._result_record(song, None, error, track_id)
                 continue
+            rejected_copies: list[Song] = []
             for resolved_song, path in downloaded:
                 track_id = keys_by_instance.get(id(resolved_song)) or track_key(resolved_song)
                 duplicates = (
@@ -1679,18 +1680,24 @@ class Engine:
                 )
                 record: dict[str, Any] | None = None
                 for duplicate in duplicates:
-                    # The file spotDL found is the user's own copy, never this job's output.
+                    # The file spotDL found is the user's own copy: never this job's output,
+                    # and never the hand-picked source, so its length is always checked.
                     record = self._result_record(
-                        resolved_song, duplicate, track_id=track_id, removable=False
+                        resolved_song,
+                        duplicate,
+                        track_id=track_id,
+                        removable=False,
+                        compare_duration=True,
                     )
                     if record["success"]:
                         break
                 if record is None:
                     record = self._result_record(resolved_song, path, track_id=track_id)
                 elif not record["success"]:
-                    # No copy is usable. They stay where they are, and the next attempt
-                    # downloads the track.
+                    # No copy is usable. They stay where they are, and spotDL, which no
+                    # longer knows them, downloads the track below.
                     _forget_known_song(downloader, resolved_song)
+                    rejected_copies.append(resolved_song)
                 results_by_id[track_id] = record
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
@@ -1702,6 +1709,13 @@ class Engine:
                         None,
                         "Provider returned no result for this track",
                     )
+            # Retries only repeat network failures and the alternate search may find
+            # nothing, so the track's own source is tried now. Its copies are forgotten,
+            # so this second pass cannot find them again.
+            if rejected_copies and self._run_attempt(
+                downloader, rejected_copies, results_by_id, threads, 0
+            ):
+                return True
         return False
 
     def _result_record(
@@ -1711,16 +1725,19 @@ class Engine:
         error: str | None = None,
         track_id: str | None = None,
         removable: bool = True,
+        compare_duration: bool | None = None,
     ) -> dict[str, Any]:
         track_id = track_id or track_key(song)
         verified: bool | None = None
+        if compare_duration is None:
+            compare_duration = not getattr(song, _MANUAL_SOURCE_ATTRIBUTE, False)
         if path is not None and self._verify_downloads:
             # A saved path is not proof of a usable download; check before reporting done.
             ok, detail = check_download_integrity(
                 str(path),
                 song.duration or 0,
                 self._media_probe,
-                compare_duration=not getattr(song, _MANUAL_SOURCE_ATTRIBUTE, False),
+                compare_duration=compare_duration,
             )
             verified = ok
             if not ok:
