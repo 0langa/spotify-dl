@@ -16,6 +16,10 @@
 - A track's own name no longer decides how its failure is classified. A failed match for "Bassline", "Russland" or "Too Many Requests" was reported as a network or rate-limit failure, so alternate-source recovery was skipped and the wrong hint was shown.
 - Cancel while the queue is preparing its next job now stops the queue. The cancel used to be lost: the job started anyway, and the rest of the queue ran after it.
 - A failed source search or network diagnosis during a download no longer makes the window treat the download as stopped.
+- A Spotify share link is reduced to the playlist, album, or track it points at: `?si=` and other tracking parameters and locale segments such as `/intl-de/` are dropped. Pasting the same source again now opens its library entry instead of creating a new one with its own auto-sync candidate. At startup, entries saved under a share link move to the plain link, and the resume point and queued jobs follow them. When a source already has several entries, the one used last takes the plain link and the others stay as they are.
+- Analyzing a source again keeps the YouTube sources picked for its tracks by hand. They were lost for good once the fresh track list was saved over the library entry.
+- With Windows long paths off, which is the default, a track whose full path would reach 260 characters gets a shorter file name instead of failing to convert or tag. Only the file name is shortened; the folders, the extension, and a collision suffix are kept. Nothing changes where long paths are on.
+- A track whose file name reached 255 characters was written to the backend's working folder instead of the output folder.
 
 ## 2.6.0 - 2026-08-18
 

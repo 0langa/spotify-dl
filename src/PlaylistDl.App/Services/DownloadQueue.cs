@@ -110,6 +110,54 @@ public static class SavedJobSnapshot
                 LastError = track.ErrorText,
             }).ToList(),
         };
+
+    /// <summary>
+    /// Gives freshly resolved tracks the YouTube sources the user picked by hand for them
+    /// in a saved job.
+    /// </summary>
+    /// <remarks>
+    /// Analyzing a source again starts its tracks over, but a manual source is a decision
+    /// about the track, not progress, and it was lost for good once the fresh list was
+    /// saved over the library entry. Tracks are matched like a restore matches them, by
+    /// Spotify URL and then by id, and a track that already has a source keeps it.
+    /// </remarks>
+    /// <returns>How many tracks got their manual source back.</returns>
+    public static int ApplyManualSources(IEnumerable<TrackItem> tracks, SavedJob? saved)
+    {
+        var manual = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var item in saved?.Tracks ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(item.SourceOverride))
+            {
+                continue;
+            }
+            if (!string.IsNullOrEmpty(item.SpotifyUrl))
+            {
+                manual.TryAdd(item.SpotifyUrl, item.SourceOverride);
+            }
+            if (!string.IsNullOrEmpty(item.Id))
+            {
+                manual.TryAdd(item.Id, item.SourceOverride);
+            }
+        }
+
+        var applied = 0;
+        foreach (var track in tracks)
+        {
+            if (!string.IsNullOrWhiteSpace(track.SourceOverride))
+            {
+                continue;
+            }
+            if ((!string.IsNullOrEmpty(track.SpotifyUrl) && manual.TryGetValue(track.SpotifyUrl, out var source)) ||
+                (!string.IsNullOrEmpty(track.Id) && manual.TryGetValue(track.Id, out source)))
+            {
+                track.SourceOverride = source;
+                applied++;
+            }
+        }
+
+        return applied;
+    }
 }
 
 /// <summary>Ordered list of download jobs executed one after another.</summary>
