@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.7.0 - 2026-10-15
+
 ### Security
 
 - Updated soupsieve from 2.8.4 to 2.9.2 (CVE-2026-85999, CVE-2026-86000).
@@ -20,6 +22,17 @@
 - Analyzing a source again keeps the YouTube sources picked for its tracks by hand. They were lost for good once the fresh track list was saved over the library entry.
 - With Windows long paths off, which is the default, a track whose full path would reach 260 characters gets a shorter file name instead of failing to convert or tag. Only the file name is shortened; the folders, the extension, and a collision suffix are kept. Nothing changes where long paths are on.
 - A track whose file name reached 255 characters was written to the backend's working folder instead of the output folder.
+
+### Upgrade notes
+
+- At the first start, library entries saved under a Spotify share link move to the plain link, and the resume point and queued jobs follow them. Nothing is merged or deleted.
+- On Windows 11, earlier versions could create artist, album, or playlist folders named like a Windows device ("Con", "Aux", "COM1"). New tracks for such a source now go to a folder with a leading underscore ("_Con"), so the source can end up split across two folders. Tracks already downloaded are not downloaded again.
+
+### Known limitations
+
+- Duplicate library entries that earlier versions created for one source are not merged. The entry used last takes the plain link; delete the others in the library if you no longer need them.
+- Folder names are not shortened. With Windows long paths off, a track still fails when the output folder plus its album artist and album folders alone reach the 260-character limit. Turn long paths on or choose a shorter output folder.
+- With "Check every saved file before marking a track done" turned off, a file the downloader matched by name in the output folder can be reported as the track's download without being checked.
 
 ## 2.6.0 - 2026-08-18
 

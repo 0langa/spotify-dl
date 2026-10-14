@@ -121,7 +121,7 @@ Minimal JSON:
 ## Release build
 
 ```powershell
-./scripts/build-release.ps1 -Version 2.6.0
+./scripts/build-release.ps1 -Version 2.7.0
 ./scripts/verify-release.ps1
 ./scripts/smoke-backend-lifecycle.ps1
 ./scripts/smoke-frozen-backend.ps1
