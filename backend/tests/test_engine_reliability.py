@@ -126,11 +126,36 @@ def test_track_resolution_retries_only_track_request() -> None:
         # The error text quotes the track, so a title or id must not pick the class.
         ("LookupError: No results found for song: DJ - Bassline Junkie", "no_match"),
         ("LookupError: No results found for song: Rammstein - Russland", "no_match"),
+        ("LookupError: No results found for song: Kapelle - Schüssl", "no_match"),
         ("https://open.spotify.com/track/4Hb429Qx - LookupError: No results found", "no_match"),
     ],
 )
 def test_classify_failure_buckets(text: str | None, expected: str) -> None:
     assert engine_module.classify_failure(text) == expected
+
+
+_NO_RESULTS = "LookupError: No results found for song: Band - {title}"
+_NO_METADATA = "DownloaderError: yt-dlp failed to get metadata for: {title} - Band"
+_NOT_CONVERTED = "FFmpegError: Failed to convert Band - {title}, see ffmpeg_error.txt"
+
+
+@pytest.mark.parametrize(
+    ("title", "text", "expected"),
+    [
+        # spotDL quotes the track as "artist - title" or as "title - artist".
+        ("Too Many Requests", _NO_RESULTS, "no_match"),
+        ("Connection Refused", _NO_RESULTS, "no_match"),
+        ("Converted", _NO_METADATA, "unknown"),
+        ("Convertible", _NOT_CONVERTED, "convert_error"),
+    ],
+)
+def test_the_quoted_track_never_decides_the_failure_class(
+    title: str, text: str, expected: str
+) -> None:
+    song = _fake_song(title, 1)
+    song.artist = "Band"
+
+    assert engine_module.classify_failure(text.format(title=title), song) == expected
 
 
 def test_dominant_failure_class_prefers_most_actionable() -> None:

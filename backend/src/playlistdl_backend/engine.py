@@ -53,8 +53,9 @@ NAMING_PRESETS = {
 }
 
 # Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes. The text
-# quotes the track ("No results found for song: Artist - Bassline"), so needles short
-# enough to occur inside a word or an id are anchored at a word or number boundary.
+# quotes the track ("No results found for song: Artist - Bassline") and its URL, so the
+# quoted track is removed before matching, and needles short enough to occur inside a
+# word or an id only match where no letter or digit touches them.
 _FAILURE_PATTERNS: tuple[tuple[str, tuple[str | re.Pattern[str], ...]], ...] = (
     (
         "integrity_failed",
@@ -65,7 +66,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str | re.Pattern[str], ...]], ...] = (
         (
             "sign in to confirm",
             "please sign in",
-            re.compile(r"(?<![a-z0-9])429(?![a-z0-9])"),
+            re.compile(r"(?<![^\W_])429(?![^\W_])"),
             "too many requests",
             "read timed out",
             "urlopen error",
@@ -81,7 +82,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str | re.Pattern[str], ...]], ...] = (
             "failed to complete request",
             "connection refused",
             "getaddrinfo failed",
-            re.compile(r"(?<![a-z])ssl"),
+            re.compile(r"(?<![^\W_])ssl"),
         ),
     ),
     (
@@ -538,9 +539,16 @@ def _source_identity(url: str | None) -> str:
     return query.get("v", url)
 
 
-def classify_failure(error_text: str | None) -> str:
+def classify_failure(error_text: str | None, song: Song | None = None) -> str:
     """Bucket raw downloader error text into an actionable failure class."""
     lowered = (error_text or "").lower()
+    artist = str(getattr(song, "artist", "") or "")
+    title = str(getattr(song, "name", "") or "")
+    if artist and title:
+        # spotDL quotes the track as "artist - title" or "title - artist"; a title such
+        # as "Too Many Requests" or "Converted" must not pick the class.
+        for quoted in (f"{artist} - {title}", f"{title} - {artist}"):
+            lowered = lowered.replace(quoted.lower(), " ")
     for failure_class, needles in _FAILURE_PATTERNS:
         if any(
             needle.search(lowered) if isinstance(needle, re.Pattern) else needle in lowered
@@ -1719,7 +1727,7 @@ class Engine:
             "path": str(path) if path else None,
             "success": path is not None,
             "error": error,
-            "error_class": None if path else classify_failure(error),
+            "error_class": None if path else classify_failure(error, song),
             "source_url": getattr(song, "download_url", None),
             "fallback_used": False,
             "verified": verified,
@@ -1810,7 +1818,9 @@ class Engine:
                 continue
             if record["error"] is None and unmatched:
                 record["error"] = unmatched.pop(0)
-            record["error_class"] = classify_failure(record["error"])
+            record["error_class"] = classify_failure(
+                record["error"], songs_by_id.get(record["track_id"])
+            )
 
     def _try_source_fallback(
         self,
