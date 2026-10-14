@@ -134,11 +134,7 @@ public sealed class BackendClient : IAsyncDisposable
     {
         await StartAsync(cancellationToken);
         var id = Guid.NewGuid().ToString("N");
-        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pending)
-        {
-            _pending[id] = completion;
-        }
+        var completion = AwaitReply(id);
 
         var message = JsonSerializer.Serialize(new { id, type, payload }, _jsonOptions);
         using var document = JsonDocument.Parse(message);
@@ -162,6 +158,20 @@ public sealed class BackendClient : IAsyncDisposable
             }
         }
     }
+
+    private TaskCompletionSource<JsonElement> AwaitReply(string id)
+    {
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_pending)
+        {
+            _pending[id] = completion;
+        }
+
+        return completion;
+    }
+
+    /// <summary>Test seam: registers a request that is waiting for the backend's reply.</summary>
+    internal Task<JsonElement> ExpectReply(string id) => AwaitReply(id).Task;
 
     public Task SendCommandAsync(string type, object payload, CancellationToken cancellationToken = default)
     {
@@ -222,7 +232,7 @@ public sealed class BackendClient : IAsyncDisposable
         }
     }
 
-    private async Task ReadEventsCoreAsync(StreamReader reader, CancellationToken cancellationToken)
+    internal async Task ReadEventsCoreAsync(StreamReader reader, CancellationToken cancellationToken)
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
@@ -259,11 +269,13 @@ public sealed class BackendClient : IAsyncDisposable
                                 ? messageElement.GetString()
                                 : "Backend returned an error without a message.";
                             completion.TrySetException(new InvalidOperationException(message));
+                            // Only the waiting caller is told; it reports the failure itself.
+                            // Broadcast, a failed source search or diagnosis during a download
+                            // would read as the job stopping.
+                            continue;
                         }
-                        else
-                        {
-                            completion.TrySetResult(root);
-                        }
+
+                        completion.TrySetResult(root);
                     }
                 }
 

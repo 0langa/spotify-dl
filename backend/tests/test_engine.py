@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from spotdl.types.song import Song
 
 from playlistdl_backend import engine as engine_module
 from playlistdl_backend.engine import (
@@ -248,3 +250,79 @@ def test_build_output_paths_can_write_directly_to_selected_folder(tmp_path) -> N
 def test_build_output_paths_rejects_unknown_preset(tmp_path) -> None:
     with pytest.raises(ValueError, match="Unknown file naming preset"):
         build_output_paths(str(tmp_path), "Mix", "custom", True)
+
+
+def _album_song(album: str, album_artist: str = "Band", title: str = "Song") -> Song:
+    song = Song.from_missing_data(
+        song_id="id-1",
+        url="https://open.spotify.com/track/id-1",
+        name=title,
+        artists=["Band"],
+        artist="Band",
+        album_name=album,
+        album_artist=album_artist,
+        track_number=1,
+        duration=200,
+        list_position=1,
+        list_length=1,
+    )
+    engine_module.normalize_song_for_download(song)
+    return song
+
+
+def _downloader_path(song: Song, template: str) -> Path:
+    """The path spotDL's downloader is handed for one song."""
+    return engine_module.spotdl_downloader_module.create_file_name(
+        song=song, template=template, file_extension="mp3", restrict="none"
+    )
+
+
+@pytest.mark.parametrize(
+    ("album", "album_artist", "expected_folders"),
+    [
+        # French typography puts a space before "?"; spotDL drops the "?" and keeps it.
+        ("Qui es-tu ?", "Band", ("Band", "Qui es-tu")),
+        ("Hits *", "Band", ("Band", "Hits")),
+        ("Live\tTapes", "Band", ("Band", "Live Tapes")),
+        ("Aux", "Con", ("_Con", "_Aux")),
+    ],
+)
+def test_album_folders_are_valid_windows_names(
+    tmp_path: Path, album: str, album_artist: str, expected_folders: tuple[str, str]
+) -> None:
+    root, template = build_output_paths(str(tmp_path), "Mix", "album_track_title", True)
+
+    path = _downloader_path(_album_song(album, album_artist), template)
+
+    assert path.parent.parent.parent == root
+    assert (path.parent.parent.name, path.parent.name) == expected_folders
+    # Windows keeps a trailing space inside a path but strips it when the folder is
+    # created, so the converter then could not open the file it was told to write.
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"audio")
+    assert path.is_file()
+
+
+def test_control_characters_never_reach_a_file_name(tmp_path: Path) -> None:
+    _, template = build_output_paths(str(tmp_path), "Mix", "artist_title", True)
+
+    path = _downloader_path(_album_song("Album", title="Line\x01Break"), template)
+
+    assert path.name == "Band - Line Break.mp3"
+
+
+def test_reuse_destination_matches_the_downloader_path(tmp_path: Path) -> None:
+    _, template = build_output_paths(str(tmp_path), "Mix", "album_track_title", True)
+    song = _album_song("Qui es-tu ?")
+
+    assert engine_module._output_path_for(song, template, "mp3") == _downloader_path(song, template)
+
+
+def test_the_selected_output_folder_is_never_renamed(tmp_path: Path) -> None:
+    chosen = tmp_path / "Con"
+    root, template = build_output_paths(str(chosen), "Ignored", "artist_title", False)
+
+    path = _downloader_path(_album_song("Album"), template)
+
+    assert root == chosen.resolve()
+    assert path.parent == root

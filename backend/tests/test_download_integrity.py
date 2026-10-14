@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -245,3 +247,296 @@ def test_an_integrity_verdict_survives_provider_error_attribution(
     record = _record(integrity_env["events"])
     assert record["error_class"] == "integrity_failed"
     assert "integrity check failed" in record["error"]
+
+
+class _DuplicateAwareDownloader(_FakeDownloader):
+    """spotDL's skip for a track it already found under another name in the output folder.
+
+    spotDL then reports the path it would have written, which does not exist, instead of
+    the file it found; only once that file is no longer known does it download again.
+    """
+
+    def __init__(self, settings: dict[str, Any]) -> None:
+        super().__init__(settings)
+        self.known_songs: dict[str, list[Path]] = {}
+        self.output = Path(settings["output"]).parent
+
+    def download_multiple_songs(self, batch: list[Any]) -> list[tuple[Any, Any]]:
+        results = []
+        for song in batch:
+            target = self.output / f"{song.list_position:02d} - Artist - {song.name}.mp3"
+            if any(path.exists() for path in self.known_songs.get(song.url, [])):
+                results.append((song, target))
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"fresh-audio")
+            results.append((song, target))
+        return results
+
+
+def _install_duplicate(
+    monkeypatch: pytest.MonkeyPatch, url: str, *existing: Path
+) -> list[_DuplicateAwareDownloader]:
+    created: list[_DuplicateAwareDownloader] = []
+
+    def build(settings: dict[str, Any]) -> _DuplicateAwareDownloader:
+        downloader = _DuplicateAwareDownloader(settings)
+        downloader.known_songs = {url: list(existing)}
+        created.append(downloader)
+        return downloader
+
+    monkeypatch.setattr(engine_module, "Downloader", build)
+    return created
+
+
+def test_a_track_already_saved_under_another_name_reports_that_file(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renamed file is found by its tags; it must not read as a failed download."""
+    engine: Engine = integrity_env["engine"]
+    renamed = Path(integrity_env["out"]) / "My Mix" / "renamed by the user.mp3"
+    renamed.parent.mkdir(parents=True)
+    renamed.write_bytes(b"audio-bytes")
+    _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", renamed)
+    searches: list[Any] = []
+    monkeypatch.setattr(
+        Engine, "search_sources", staticmethod(lambda *args, **kwargs: searches.append(args) or [])
+    )
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["verified"] is True
+    assert record["path"] == str(renamed)
+    assert searches == []
+
+
+def test_an_unusable_file_found_under_another_name_is_kept_and_downloaded_again(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    created = _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+    monkeypatch.setattr(
+        Engine,
+        "search_sources",
+        staticmethod(
+            lambda *args, **kwargs: [
+                {
+                    "url": "https://music.youtube.com/watch?v=alt",
+                    "title": "One",
+                    "artists": ["Artist"],
+                    "album": "Album",
+                    "duration_seconds": 200,
+                    "result_type": "song",
+                }
+            ]
+        ),
+    )
+
+    engine.download("job", integrity_env["out"], retries=0)
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["path"] != str(stub)
+    # The user's own copy is never deleted, only no longer offered to the downloader.
+    assert stub.read_bytes() == b"x"
+    assert created[0].known_songs == {}
+
+
+def test_every_copy_found_under_another_name_is_tried_before_downloading_again(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = integrity_env["engine"]
+    folder = Path(integrity_env["out"]) / "My Mix"
+    folder.mkdir(parents=True)
+    stub, other_format, good = folder / "stub.mp3", folder / "One.flac", folder / "One.mp3"
+    for path in (stub, other_format, good):
+        path.write_bytes(b"audio-bytes")
+    created = _install_duplicate(
+        monkeypatch, "https://open.spotify.com/track/id-1", stub, other_format, good
+    )
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    # A file in another format never stands in for the requested one.
+    assert record["path"] == str(good)
+    assert stub.exists()
+    assert created[0].known_songs != {}
+
+
+def test_a_track_whose_copies_are_all_unusable_is_downloaded_from_its_own_source(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rejecting the copies must not leave the track to alternate sources alone.
+
+    Retries only repeat network failures, and the alternate search can find nothing, so
+    the track would fail on every run for as long as the copy stays in the folder.
+    """
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    created = _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+    # integrity_env's alternate search finds nothing.
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["fallback_used"] is False
+    assert Path(record["path"]).read_bytes() == b"fresh-audio"
+    assert stub.read_bytes() == b"x"
+    assert created[0].known_songs == {}
+
+
+def test_a_copy_found_for_a_hand_picked_source_must_still_match_the_track_length(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the hand-picked download may differ in length; a copy found on disk is not it."""
+    engine: Engine = integrity_env["engine"]
+    stub = Path(integrity_env["out"]) / "My Mix" / "old stub.mp3"
+    stub.parent.mkdir(parents=True)
+    stub.write_bytes(b"x")
+    _install_duplicate(monkeypatch, "https://open.spotify.com/track/id-1", stub)
+    # The stub holds 5 s of a 200 s track; the live version picked by hand runs 15 min.
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 900.0, "ok")
+    live = "https://www.youtube.com/watch?v=live"
+
+    engine.download("job", integrity_env["out"], source_overrides={"id-1": live})
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    assert record["path"] != str(stub)
+    assert Path(record["path"]).read_bytes() == b"fresh-audio"
+    assert record["source_url"] == live
+    assert stub.read_bytes() == b"x"
+
+
+def _ffprobe_answer(
+    monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected"),
+    [
+        (
+            0,
+            '{"streams": [{"codec_type": "audio"}], "format": {"duration": "201.5"}}',
+            "",
+            (True, 201.5, "ok"),
+        ),
+        # Cover art is a video stream next to the audio, not instead of it.
+        (
+            0,
+            '{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {}}',
+            "",
+            (True, None, "ok"),
+        ),
+        (
+            0,
+            '{"streams": [{"codec_type": "video"}]}',
+            "",
+            (False, None, "the file holds no audio stream"),
+        ),
+        (
+            1,
+            "",
+            "Invalid data found when processing input\n",
+            (False, None, "Invalid data found when processing input"),
+        ),
+        (1, "", "", (False, None, "the file could not be read")),
+        # A probe that says nothing, or nothing readable, is no verdict on the file.
+        (0, "  ", "", (True, None, "probe returned nothing")),
+        (0, "not json", "", (True, None, "probe output could not be read")),
+    ],
+)
+def test_probe_media_verdicts(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    expected: tuple[bool, float | None, str],
+) -> None:
+    _ffprobe_answer(monkeypatch, returncode, stdout, stderr)
+
+    assert engine_module.probe_media("track.mp3") == expected
+
+
+def test_a_missing_probe_skips_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(command: list[str], **kwargs: Any) -> None:
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    readable, duration, detail = engine_module.probe_media("track.mp3")
+
+    assert (readable, duration) == (True, None)
+    assert detail.startswith("probe unavailable")
+
+
+def test_the_probe_next_to_the_bundled_ffmpeg_is_preferred(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffmpeg.write_bytes(b"")
+    ffprobe.write_bytes(b"")
+    monkeypatch.setenv("PLAYLISTDL_FFMPEG", str(ffmpeg))
+    calls = _ffprobe_answer(monkeypatch, stdout='{"streams": [{"codec_type": "audio"}]}')
+
+    engine_module.probe_media("track.mp3")
+
+    assert calls[0][0] == str(ffprobe)
+    assert calls[0][-1] == "track.mp3"
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="needs FFmpeg on PATH",
+)
+def test_the_real_probe_reads_a_file_with_a_non_latin_name(tmp_path: Path) -> None:
+    track = tmp_path / "Björk – 日本語 ✓.mp3"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-t",
+            "2",
+            "-q:a",
+            "9",
+            str(track),
+        ],
+        check=True,
+        timeout=60,
+    )
+    not_audio = tmp_path / "Björk – notes.mp3"
+    not_audio.write_text("not audio", encoding="utf-8")
+
+    readable, duration, detail = engine_module.probe_media(str(track))
+
+    assert (readable, detail) == (True, "ok")
+    assert duration is not None and abs(duration - 2.0) < 0.5
+    assert engine_module.probe_media(str(not_audio))[0] is False

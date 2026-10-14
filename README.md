@@ -22,6 +22,21 @@ dotnet run --project src/PlaylistDl.App/PlaylistDl.App.csproj
 
 UI launches backend through `uv` during development. Set `PLAYLISTDL_BACKEND_PATH` to a frozen backend executable to override this.
 
+CI runs these checks on every push and pull request:
+
+```powershell
+uv sync --project backend --extra dev --locked
+uv run --project backend --extra dev ruff check backend
+uv run --project backend --extra dev ruff format --check backend
+uv run --project backend --extra dev python -m pytest backend/tests --cov=playlistdl_backend --cov-fail-under=80
+./scripts/audit-python-dependencies.ps1
+dotnet format PlaylistDl.slnx --verify-no-changes
+dotnet build PlaylistDl.slnx --configuration Release
+dotnet test PlaylistDl.slnx --configuration Release --no-build
+```
+
+Release builds additionally run `./scripts/verify-release.ps1`, `./scripts/smoke-backend-lifecycle.ps1`, and `./scripts/smoke-frozen-backend.ps1`. The unit tests use fixtures and mocks and need no network. Live-download checks use public-domain or permissively licensed media only; public Spotify playlists may be resolved for metadata-only testing.
+
 ## Features
 
 - Spotify public playlist, album, and single-track resolution through spotDL experimental resolver, with an optional official Web API path using your own client credentials
@@ -110,7 +125,6 @@ Minimal JSON:
 ```
 
 Build freezes Python backend, excludes unused HTTP-server modules, bundles local `ffmpeg`, `ffprobe`, and `deno`, verifies helper hashes at runtime, then publishes `artifacts/release/PlaylistDL.exe`. Released executable extracts versioned helpers under `%LOCALAPPDATA%\PlaylistDL\tools` on first use. Release directory also contains checksummed license and third-party notices.
-
 
 ## License
 

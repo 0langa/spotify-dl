@@ -29,7 +29,7 @@ from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.manifest import load_manifest
 from playlistdl_backend.models import PlaylistDto, TrackDto
-from playlistdl_backend.playlist_file import sanitize_filename, write_m3u8
+from playlistdl_backend.playlist_file import sanitize_filename, windows_safe_path, write_m3u8
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,11 @@ NAMING_PRESETS = {
     "album_track_title": "{album-artist}/{album}/{track-number} - {title}.{output-ext}",
 }
 
-# Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes.
-_FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+# Failure taxonomy: map raw spotDL/yt-dlp error text onto actionable classes. The text
+# quotes the track ("No results found for song: Artist - Bassline") and its URL, so the
+# quoted track is removed before matching, and needles short enough to occur inside a
+# word or an id only match where no letter or digit touches them.
+_FAILURE_PATTERNS: tuple[tuple[str, tuple[str | re.Pattern[str], ...]], ...] = (
     (
         "integrity_failed",
         ("integrity check failed",),
@@ -63,7 +66,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "sign in to confirm",
             "please sign in",
-            "429",
+            re.compile(r"(?<![^\W_])429(?![^\W_])"),
             "too many requests",
             "read timed out",
             "urlopen error",
@@ -79,7 +82,7 @@ _FAILURE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "failed to complete request",
             "connection refused",
             "getaddrinfo failed",
-            "ssl",
+            re.compile(r"(?<![^\W_])ssl"),
         ),
     ),
     (
@@ -536,11 +539,21 @@ def _source_identity(url: str | None) -> str:
     return query.get("v", url)
 
 
-def classify_failure(error_text: str | None) -> str:
+def classify_failure(error_text: str | None, song: Song | None = None) -> str:
     """Bucket raw downloader error text into an actionable failure class."""
     lowered = (error_text or "").lower()
+    artist = str(getattr(song, "artist", "") or "")
+    title = str(getattr(song, "name", "") or "")
+    if artist and title:
+        # spotDL quotes the track as "artist - title" or "title - artist"; a title such
+        # as "Too Many Requests" or "Converted" must not pick the class.
+        for quoted in (f"{artist} - {title}", f"{title} - {artist}"):
+            lowered = lowered.replace(quoted.lower(), " ")
     for failure_class, needles in _FAILURE_PATTERNS:
-        if any(needle in lowered for needle in needles):
+        if any(
+            needle.search(lowered) if isinstance(needle, re.Pattern) else needle in lowered
+            for needle in needles
+        ):
             return failure_class
     return "unknown"
 
@@ -712,9 +725,42 @@ spotdl_downloader_module.reinit_song = reinitialize_song_resilient
 _OUTPUT_SUFFIX_ATTRIBUTE = "_playlistdl_output_suffix"
 
 
+def _template_root_parts(template: str) -> int:
+    """Count the leading parts of an output template that hold no placeholder."""
+    parts = Path(template).parts
+    count = len(parts)
+    while count and "{" in parts[count - 1]:
+        count -= 1
+    return count
+
+
+def create_output_path(
+    song: Song,
+    template: str,
+    file_extension: str,
+    restrict: str | None = None,
+    short: bool = False,
+    file_name_length: int | None = None,
+) -> Path:
+    """Return spotDL's path for one song, made valid on Windows below the output folder.
+
+    Every place that predicts or writes a track's file goes through here, so the reuse,
+    collision, and playlist-file logic always agree with the downloader.
+    """
+    path = spotdl_create_file_name(
+        song=song,
+        template=template,
+        file_extension=file_extension,
+        restrict=restrict,
+        short=short,
+        file_name_length=file_name_length,
+    )
+    return windows_safe_path(path, _template_root_parts(template))
+
+
 def _create_file_name_with_collision_suffix(*args: Any, **kwargs: Any) -> Path:
     """Preserve selected naming preset while disambiguating colliding tracks."""
-    path = spotdl_create_file_name(*args, **kwargs)
+    path = create_output_path(*args, **kwargs)
     song = kwargs.get("song") or args[0]
     suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
     return path.with_name(f"{path.stem}{suffix}{path.suffix}") if suffix else path
@@ -743,9 +789,47 @@ def _create_downloader(settings: dict[str, Any]) -> Downloader:
         return Downloader({**settings, "scan_for_songs": False})
 
 
+def _known_duplicates_of(downloader: Downloader, song: Song, path: Path | str) -> list[Path]:
+    """Return the files spotDL skipped this track for, when that is what it did.
+
+    spotDL skips a track whose Spotify URL it already found in another file under the
+    output folder — one the user renamed, or one saved under an earlier naming preset —
+    but reports the path it would have written instead of the file it found. That path
+    does not exist, so the track read as a failed download and every alternate source
+    was skipped the same way. As for cross-job reuse, only a file in the requested
+    format can stand in for the download.
+    """
+    try:
+        if Path(path).exists():
+            return []
+    except OSError:
+        return []
+    known = getattr(downloader, "known_songs", None) or {}
+    suffix = Path(path).suffix.lower()
+    found: list[Path] = []
+    for candidate in known.get(str(getattr(song, "url", "") or ""), []):
+        try:
+            if (
+                _path_key(candidate) != _path_key(path)
+                and Path(candidate).suffix.lower() == suffix
+                and Path(candidate).is_file()
+            ):
+                found.append(Path(candidate))
+        except OSError:
+            continue
+    return found
+
+
+def _forget_known_song(downloader: Downloader, song: Song) -> None:
+    """Stop spotDL from skipping a track because of a file that turned out unusable."""
+    known = getattr(downloader, "known_songs", None)
+    if isinstance(known, dict):
+        known.pop(str(getattr(song, "url", "") or ""), None)
+
+
 def _output_path_for(song: Song, output_template: str, audio_format: str) -> Path:
     """Return the file this job would write for one song, collision suffix included."""
-    base_path = spotdl_create_file_name(
+    base_path = create_output_path(
         song=song,
         template=output_template,
         file_extension=audio_format,
@@ -792,7 +876,7 @@ def assign_unique_output_suffixes(
     groups: dict[str, list[tuple[Song, Path]]] = {}
     for song in songs:
         setattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "")
-        base_path = spotdl_create_file_name(
+        base_path = create_output_path(
             song=song,
             template=output_template,
             file_extension=audio_format,
@@ -1586,11 +1670,35 @@ class Engine:
                     track_id = track_key(song)
                     results_by_id[track_id] = self._result_record(song, None, error, track_id)
                 continue
+            rejected_copies: list[Song] = []
             for resolved_song, path in downloaded:
                 track_id = keys_by_instance.get(id(resolved_song)) or track_key(resolved_song)
-                results_by_id[track_id] = self._result_record(
-                    resolved_song, path, track_id=track_id
+                duplicates = (
+                    _known_duplicates_of(downloader, resolved_song, path)
+                    if path is not None
+                    else []
                 )
+                record: dict[str, Any] | None = None
+                for duplicate in duplicates:
+                    # The file spotDL found is the user's own copy: never this job's output,
+                    # and never the hand-picked source, so its length is always checked.
+                    record = self._result_record(
+                        resolved_song,
+                        duplicate,
+                        track_id=track_id,
+                        removable=False,
+                        compare_duration=True,
+                    )
+                    if record["success"]:
+                        break
+                if record is None:
+                    record = self._result_record(resolved_song, path, track_id=track_id)
+                elif not record["success"]:
+                    # No copy is usable. They stay where they are, and spotDL, which no
+                    # longer knows them, downloads the track below.
+                    _forget_known_song(downloader, resolved_song)
+                    rejected_copies.append(resolved_song)
+                results_by_id[track_id] = record
             new_errors = list(downloader.errors[errors_before:])
             self._attribute_errors(batch, new_errors, results_by_id)
             for song in batch:
@@ -1601,6 +1709,13 @@ class Engine:
                         None,
                         "Provider returned no result for this track",
                     )
+            # Retries only repeat network failures and the alternate search may find
+            # nothing, so the track's own source is tried now. Its copies are forgotten,
+            # so this second pass cannot find them again.
+            if rejected_copies and self._run_attempt(
+                downloader, rejected_copies, results_by_id, threads, 0
+            ):
+                return True
         return False
 
     def _result_record(
@@ -1610,16 +1725,19 @@ class Engine:
         error: str | None = None,
         track_id: str | None = None,
         removable: bool = True,
+        compare_duration: bool | None = None,
     ) -> dict[str, Any]:
         track_id = track_id or track_key(song)
         verified: bool | None = None
+        if compare_duration is None:
+            compare_duration = not getattr(song, _MANUAL_SOURCE_ATTRIBUTE, False)
         if path is not None and self._verify_downloads:
             # A saved path is not proof of a usable download; check before reporting done.
             ok, detail = check_download_integrity(
                 str(path),
                 song.duration or 0,
                 self._media_probe,
-                compare_duration=not getattr(song, _MANUAL_SOURCE_ATTRIBUTE, False),
+                compare_duration=compare_duration,
             )
             verified = ok
             if not ok:
@@ -1637,7 +1755,7 @@ class Engine:
             "path": str(path) if path else None,
             "success": path is not None,
             "error": error,
-            "error_class": None if path else classify_failure(error),
+            "error_class": None if path else classify_failure(error, song),
             "source_url": getattr(song, "download_url", None),
             "fallback_used": False,
             "verified": verified,
@@ -1728,7 +1846,9 @@ class Engine:
                 continue
             if record["error"] is None and unmatched:
                 record["error"] = unmatched.pop(0)
-            record["error_class"] = classify_failure(record["error"])
+            record["error_class"] = classify_failure(
+                record["error"], songs_by_id.get(record["track_id"])
+            )
 
     def _try_source_fallback(
         self,
@@ -1919,7 +2039,7 @@ class Engine:
         for index, song in enumerate(collection):
             for template in templates:
                 try:
-                    base_path = spotdl_create_file_name(
+                    base_path = create_output_path(
                         song=song,
                         template=template,
                         file_extension=audio_format,

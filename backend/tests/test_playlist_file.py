@@ -53,3 +53,15 @@ def test_sanitize_filename_clamps_long_collection_names() -> None:
 @pytest.mark.parametrize("raw", ["CON", "nul", "LPT1", "com9.mp3"])
 def test_sanitize_filename_escapes_reserved_windows_names(raw: str) -> None:
     assert sanitize_filename(raw).startswith("_")
+
+
+@pytest.mark.parametrize("raw", ["CONIN$", "conout$.txt", "COM\u00b9", "lpt\u00b3.mp3", "nul .mp3"])
+def test_sanitize_filename_escapes_every_windows_device_name(raw: str) -> None:
+    # Windows 10 opens the device for all of these, including a name padded before its
+    # extension, so the collection folder and playlist file would point at a device.
+    assert sanitize_filename(raw).startswith("_")
+
+
+@pytest.mark.parametrize("raw", ["Console", "Auxiliary", "COM10", "nul-mix", "Lpt"])
+def test_sanitize_filename_keeps_names_that_only_resemble_devices(raw: str) -> None:
+    assert sanitize_filename(raw) == raw
