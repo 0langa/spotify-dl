@@ -269,9 +269,9 @@ public sealed class BackendClient : IAsyncDisposable
                                 ? messageElement.GetString()
                                 : "Backend returned an error without a message.";
                             completion.TrySetException(new InvalidOperationException(message));
-                            // The caller reports its own failure. Broadcast as well, a failed
-                            // source search or diagnosis during a download read as the job
-                            // stopping, and a rejected start was reported twice.
+                            // Only the waiting caller is told; it reports the failure itself.
+                            // Broadcast, a failed source search or diagnosis during a download
+                            // would read as the job stopping.
                             continue;
                         }
 
