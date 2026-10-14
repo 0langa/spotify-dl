@@ -843,8 +843,9 @@ public partial class MainWindow : Window
                 prepared = await PrepareQueuedJobAsync(job);
                 if (_queueCancelRequested)
                 {
-                    // It never started, so it stays queued with the jobs behind it.
-                    _queue.Requeue(job);
+                    // It never started, so it stays queued with the jobs behind it, and it
+                    // keeps the resolve it just got while this backend session lasts.
+                    _queue.Requeue(prepared);
                     StopCancelledQueueRun();
                     return;
                 }
@@ -1031,6 +1032,13 @@ public partial class MainWindow : Window
             var existingFiles = snapshot.DuplicatePolicy == "download"
                 ? null
                 : await Task.Run(() => _library.DownloadedFiles(_playlist?.SourceUrl));
+            if (_queueCancelRequested && _activeQueuedJob is { } cancelled)
+            {
+                // Cancel was pressed while the library was read; the job has not started.
+                _queue.Requeue(cancelled);
+                StopCancelledQueueRun();
+                return;
+            }
             _activeTrackIds = jobTracks.Select(track => track.Id).ToHashSet();
             // This job supersedes the previous failure set; results repopulate it.
             _failedTracks.Clear();
