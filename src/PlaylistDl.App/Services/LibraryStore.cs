@@ -28,7 +28,10 @@ public sealed class LibraryStore
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceUrl.Trim())))[..16]
             .ToLowerInvariant();
 
-    public IReadOnlyList<SavedJob> List()
+    public IReadOnlyList<SavedJob> List() => Entries().Select(entry => entry.Job).ToList();
+
+    /// <summary>Every readable entry with the file it was read from, newest first.</summary>
+    private List<(string Path, SavedJob Job)> Entries()
     {
         if (!Directory.Exists(_directory))
         {
@@ -46,7 +49,7 @@ public sealed class LibraryStore
             return [];
         }
 
-        var jobs = new List<SavedJob>();
+        var entries = new List<(string Path, SavedJob Job)>();
         foreach (var file in files)
         {
             try
@@ -54,7 +57,7 @@ public sealed class LibraryStore
                 var job = JsonSerializer.Deserialize<SavedJob>(File.ReadAllText(file), _jsonOptions);
                 if (job is not null && !string.IsNullOrWhiteSpace(job.SourceUrl))
                 {
-                    jobs.Add(job);
+                    entries.Add((file, job));
                 }
             }
             catch (JsonException)
@@ -69,7 +72,79 @@ public sealed class LibraryStore
             }
         }
 
-        return jobs.OrderByDescending(job => job.UpdatedAt).ToList();
+        return entries.OrderByDescending(entry => entry.Job.UpdatedAt).ToList();
+    }
+
+    /// <summary>
+    /// Moves entries saved under a Spotify share link (<c>?si=</c>, a locale segment) to
+    /// the canonical link, so pasting the same source again finds them.
+    /// </summary>
+    /// <remarks>
+    /// Safe to run on every start: an entry is moved only while no entry exists under its
+    /// canonical link, and newest first, so of several entries for one source the one used
+    /// last takes the canonical link. The others are left exactly as they are and still
+    /// open, sync, and delete like before. Nothing is merged or deleted, and the moved
+    /// entry keeps its own timestamp.
+    /// </remarks>
+    /// <returns>How many entries were moved.</returns>
+    public int NormalizeSourceUrls()
+    {
+        var moved = 0;
+        foreach (var (path, job) in Entries())
+        {
+            var canonical = SpotifyInput.CanonicalSource(job.SourceUrl);
+            var target = PathFor(canonical);
+            if (canonical == job.SourceUrl || File.Exists(target))
+            {
+                continue;
+            }
+
+            job.SourceUrl = canonical;
+            var temporaryPath = target + ".tmp";
+            try
+            {
+                File.WriteAllText(temporaryPath, JsonSerializer.Serialize(job, _jsonOptions));
+                File.Move(temporaryPath, target);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                Discard(temporaryPath);
+                continue;
+            }
+
+            // A copy that cannot be removed only leaves the old entry beside the moved one.
+            Discard(path);
+            moved++;
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// Maps a source URL kept outside the library (the resume point, a queued job) onto the
+    /// library entry it belongs to.
+    /// </summary>
+    /// <remarks>
+    /// A URL with its own entry is kept: that is an entry <see cref="NormalizeSourceUrls"/>
+    /// left in place. Any other Spotify link becomes canonical, so the job saves into the
+    /// entry that was moved there instead of starting a new one under the old link.
+    /// </remarks>
+    public string CurrentSourceUrl(string sourceUrl) =>
+        File.Exists(PathFor(sourceUrl)) ? sourceUrl : SpotifyInput.CanonicalSource(sourceUrl);
+
+    /// <summary>A queued job pointed at the library entry it belongs to.</summary>
+    /// <seealso cref="CurrentSourceUrl"/>
+    public QueuedJob FollowSource(QueuedJob job)
+    {
+        var current = CurrentSourceUrl(job.SourceUrl);
+        if (current == job.SourceUrl)
+        {
+            return job;
+        }
+
+        job.Snapshot.SourceUrl = current;
+        return job with { SourceUrl = current };
     }
 
     /// <summary>

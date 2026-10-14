@@ -132,13 +132,20 @@ public partial class MainWindow : Window
                 "PlaylistDL",
                 "updates"));
         }
-        // Subscribed after the restore so a queue.json that could not be read is never
-        // overwritten with an empty queue before the user changes anything.
-        _queue.Replace(_queueStore.Load());
-        _queue.Changed += (_, _) => PersistQueue();
-        UpdateQueueUi();
         _savedJob = _jobStore.Load();
         _library.MigrateFromLastJob(_savedJob);
+        // Before the queue is restored: queued jobs and the resume point follow the
+        // library entries this moves to their canonical Spotify link.
+        _library.NormalizeSourceUrls();
+        if (_savedJob is not null)
+        {
+            _savedJob.SourceUrl = _library.CurrentSourceUrl(_savedJob.SourceUrl);
+        }
+        // Subscribed after the restore so a queue.json that could not be read is never
+        // overwritten with an empty queue before the user changes anything.
+        _queue.Replace(_queueStore.Load().Select(_library.FollowSource).ToList());
+        _queue.Changed += (_, _) => PersistQueue();
+        UpdateQueueUi();
         ResumeButton.Visibility = _savedJob is null ? Visibility.Collapsed : Visibility.Visible;
         if (_savedJob is not null)
         {
@@ -1854,7 +1861,15 @@ public partial class MainWindow : Window
     private void ApplyResolvedPlaylist(JsonElement response, SavedJob? restore)
     {
         _playlist = response.GetProperty("playlist").Deserialize<PlaylistInfo>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        SetTracks(RestoreTracks(_playlist, restore));
+        var tracks = RestoreTracks(_playlist, restore);
+        var manualSources = 0;
+        if (restore is null && _playlist is { SourceUrl.Length: > 0 } analyzed)
+        {
+            // A fresh analysis of a known source starts its tracks over, but keeps the
+            // YouTube sources picked for them by hand.
+            manualSources = SavedJobSnapshot.ApplyManualSources(tracks, _library.Load(analyzed.SourceUrl));
+        }
+        SetTracks(tracks);
 
         PlaylistTitle.Text = _playlist?.Name ?? "Playlist";
         FilterBox.Clear();
@@ -1865,7 +1880,13 @@ public partial class MainWindow : Window
         UpdateSelectionUi();
         var sourceLabel = SourceLabel();
         StatusText.Text = restore is null
-            ? $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready"
+            ? $"{char.ToUpperInvariant(sourceLabel[0])}{sourceLabel[1..]} ready" +
+                (manualSources switch
+                {
+                    0 => string.Empty,
+                    1 => " — 1 manual source kept",
+                    _ => $" — {manualSources} manual sources kept",
+                })
             : $"Job restored — {Tracks.Count(track => track.Status == "Done")} complete, {Tracks.Count(track => track.IsSelected)} remaining";
     }
 
@@ -1918,8 +1939,9 @@ public partial class MainWindow : Window
 
         var resume = _jobStore.Load();
         if (resume is not null &&
-            repairedSources.Contains(resume.SourceUrl, StringComparer.OrdinalIgnoreCase) &&
-            _library.Load(resume.SourceUrl) is { } refreshed)
+            _library.CurrentSourceUrl(resume.SourceUrl) is var resumeSource &&
+            repairedSources.Contains(resumeSource, StringComparer.OrdinalIgnoreCase) &&
+            _library.Load(resumeSource) is { } refreshed)
         {
             try
             {
@@ -2029,6 +2051,8 @@ public partial class MainWindow : Window
         }
         try
         {
+            // The resume file can still name a share link whose library entry has moved.
+            saved.SourceUrl = _library.CurrentSourceUrl(saved.SourceUrl);
             PlaylistUrlBox.Text = saved.SourceUrl;
             if (!string.IsNullOrWhiteSpace(saved.OutputDirectory))
             {

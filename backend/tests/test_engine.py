@@ -10,6 +10,7 @@ import pytest
 from spotdl.types.song import Song
 
 from playlistdl_backend import engine as engine_module
+from playlistdl_backend import playlist_file
 from playlistdl_backend.engine import (
     Engine,
     build_output_paths,
@@ -316,6 +317,64 @@ def test_reuse_destination_matches_the_downloader_path(tmp_path: Path) -> None:
     song = _album_song("Qui es-tu ?")
 
     assert engine_module._output_path_for(song, template, "mp3") == _downloader_path(song, template)
+
+
+def test_a_file_name_spotdl_shortens_stays_in_the_output_folder(tmp_path: Path) -> None:
+    root, template = build_output_paths(str(tmp_path), "Mix", "album_track_title", True)
+    song = _album_song("Album", title="Movement " * 40)
+
+    path = _downloader_path(song, template)
+
+    assert path.parent == root / "Band" / "Album"
+    assert len(path.name) < 255
+    assert path.name.startswith("01 - Movement")
+
+
+def test_a_long_title_fits_windows_max_path_without_long_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, template = build_output_paths(str(tmp_path), "Mix", "album_track_title", True)
+    title = "Symphony No. 9 in D minor, Op. 125 'Choral': IV. Presto - Allegro assai"
+    song = _album_song("Beethoven: Complete Symphonies", "Berliner Philharmoniker", title)
+    # The album folder ends 222 characters in, whatever the temp folder's length, so the
+    # full path passes MAX_PATH and a shortened name still fits behind the folders.
+    folders = len(str(tmp_path / "Mix" / "Berliner Philharmoniker")) + 1
+    song.album_name = "Beethoven- Complete Symphonies ".ljust(222 - folders, "x")
+    monkeypatch.setattr(playlist_file, "long_paths_enabled", lambda: True)
+    full = _downloader_path(song, template)
+    assert len(str(full)) > 259
+
+    monkeypatch.setattr(playlist_file, "long_paths_enabled", lambda: False)
+    path = _downloader_path(song, template)
+
+    assert len(str(path)) <= 259
+    assert path.parent == full.parent
+    assert path.name == "01 - Symphony No. 9 in.mp3"
+    assert path.suffix == ".mp3"
+    assert engine_module._output_path_for(song, template, "mp3") == path
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"audio")
+    assert path.is_file()
+
+
+def test_colliding_shortened_names_keep_their_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(playlist_file, "long_paths_enabled", lambda: False)
+    _, template = build_output_paths(str(tmp_path), "Mix", "artist_title", True)
+    stem = "Variation " * 40
+    first = _album_song("Album", title=f"{stem}one")
+    second = _album_song("Album", title=f"{stem}two")
+    second.song_id = "id-2"
+    second.url = "https://open.spotify.com/track/id-2"
+
+    engine_module.assign_unique_output_suffixes([first, second], template, "mp3")
+
+    paths = [engine_module._output_path_for(song, template, "mp3") for song in (first, second)]
+    assert paths[0] != paths[1]
+    assert paths[1].stem.endswith(" [id-2]")
+    assert paths[1] == _downloader_path(second, template)
+    assert all(len(str(path)) <= 259 for path in paths)
 
 
 def test_the_selected_output_folder_is_never_renamed(tmp_path: Path) -> None:

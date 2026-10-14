@@ -110,6 +110,9 @@ Minimal JSON:
 - An auto-sync run uses the settings that were in force when the check was queued, like every other queued job, not the settings in force when it finally runs.
 - The library shows when a source was last queued for a check. A check that was queued while the queue was busy runs when you start the queue.
 - The library check assumes one running copy of the app. A second instance started against the same library does not learn about a repair the first one made and can write its own view back.
+- Without Windows long paths (`LongPathsEnabled`, off by default), a file name is shortened so the full path stays below 260 characters. Folder names are not shortened, so an output folder whose album artist and album folders alone pass that limit still fails; turning long paths on keeps every name in full.
+- Analyze on a source the library already knows starts its tracks over and keeps only the YouTube sources picked by hand. Open or Sync it from the library to continue where it left off.
+- Library entries are keyed by the plain Spotify link. Where an earlier version saved one source under several share links, the entry used last takes the plain link and the others stay in the library until you delete them.
 - Loudness normalization re-encodes, so M4A and Opus lose their stream-copy shortcut and those downloads take longer while it is on.
 - Download verification compares the saved audio against the source length with a tolerance of 10 seconds or 10 percent. A source you pick by hand is checked only for readability, so a live or extended version is accepted. Verification is skipped when no probe is available.
 - In-app updates replace the running executable in its current folder, so a copy in a write-protected location (for example Program Files) must be updated manually from the release page.
