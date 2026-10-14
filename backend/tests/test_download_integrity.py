@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -344,3 +346,124 @@ def test_an_unusable_file_found_under_another_name_is_kept_and_downloaded_again(
     # The user's own copy is never deleted, only no longer offered to the downloader.
     assert stub.read_bytes() == b"x"
     assert created[0].known_songs == {}
+
+
+def _ffprobe_answer(
+    monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected"),
+    [
+        (
+            0,
+            '{"streams": [{"codec_type": "audio"}], "format": {"duration": "201.5"}}',
+            "",
+            (True, 201.5, "ok"),
+        ),
+        # Cover art is a video stream next to the audio, not instead of it.
+        (
+            0,
+            '{"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {}}',
+            "",
+            (True, None, "ok"),
+        ),
+        (
+            0,
+            '{"streams": [{"codec_type": "video"}]}',
+            "",
+            (False, None, "the file holds no audio stream"),
+        ),
+        (
+            1,
+            "",
+            "Invalid data found when processing input\n",
+            (False, None, "Invalid data found when processing input"),
+        ),
+        (1, "", "", (False, None, "the file could not be read")),
+        # A probe that says nothing, or nothing readable, is no verdict on the file.
+        (0, "  ", "", (True, None, "probe returned nothing")),
+        (0, "not json", "", (True, None, "probe output could not be read")),
+    ],
+)
+def test_probe_media_verdicts(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    expected: tuple[bool, float | None, str],
+) -> None:
+    _ffprobe_answer(monkeypatch, returncode, stdout, stderr)
+
+    assert engine_module.probe_media("track.mp3") == expected
+
+
+def test_a_missing_probe_skips_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    def run(command: list[str], **kwargs: Any) -> None:
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    readable, duration, detail = engine_module.probe_media("track.mp3")
+
+    assert (readable, duration) == (True, None)
+    assert detail.startswith("probe unavailable")
+
+
+def test_the_probe_next_to_the_bundled_ffmpeg_is_preferred(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffmpeg.write_bytes(b"")
+    ffprobe.write_bytes(b"")
+    monkeypatch.setenv("PLAYLISTDL_FFMPEG", str(ffmpeg))
+    calls = _ffprobe_answer(monkeypatch, stdout='{"streams": [{"codec_type": "audio"}]}')
+
+    engine_module.probe_media("track.mp3")
+
+    assert calls[0][0] == str(ffprobe)
+    assert calls[0][-1] == "track.mp3"
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="needs FFmpeg on PATH",
+)
+def test_the_real_probe_reads_a_file_with_a_non_latin_name(tmp_path: Path) -> None:
+    track = tmp_path / "Björk – 日本語 ✓.mp3"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-t",
+            "2",
+            "-q:a",
+            "9",
+            str(track),
+        ],
+        check=True,
+        timeout=60,
+    )
+    not_audio = tmp_path / "Björk – notes.mp3"
+    not_audio.write_text("not audio", encoding="utf-8")
+
+    readable, duration, detail = engine_module.probe_media(str(track))
+
+    assert (readable, detail) == (True, "ok")
+    assert duration is not None and abs(duration - 2.0) < 0.5
+    assert engine_module.probe_media(str(not_audio))[0] is False
