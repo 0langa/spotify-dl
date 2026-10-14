@@ -275,13 +275,13 @@ class _DuplicateAwareDownloader(_FakeDownloader):
 
 
 def _install_duplicate(
-    monkeypatch: pytest.MonkeyPatch, url: str, existing: Path
+    monkeypatch: pytest.MonkeyPatch, url: str, *existing: Path
 ) -> list[_DuplicateAwareDownloader]:
     created: list[_DuplicateAwareDownloader] = []
 
     def build(settings: dict[str, Any]) -> _DuplicateAwareDownloader:
         downloader = _DuplicateAwareDownloader(settings)
-        downloader.known_songs = {url: [existing]}
+        downloader.known_songs = {url: list(existing)}
         created.append(downloader)
         return downloader
 
@@ -346,6 +346,30 @@ def test_an_unusable_file_found_under_another_name_is_kept_and_downloaded_again(
     # The user's own copy is never deleted, only no longer offered to the downloader.
     assert stub.read_bytes() == b"x"
     assert created[0].known_songs == {}
+
+
+def test_every_copy_found_under_another_name_is_tried_before_downloading_again(
+    integrity_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine: Engine = integrity_env["engine"]
+    folder = Path(integrity_env["out"]) / "My Mix"
+    folder.mkdir(parents=True)
+    stub, other_format, good = folder / "stub.mp3", folder / "One.flac", folder / "One.mp3"
+    for path in (stub, other_format, good):
+        path.write_bytes(b"audio-bytes")
+    created = _install_duplicate(
+        monkeypatch, "https://open.spotify.com/track/id-1", stub, other_format, good
+    )
+    engine._media_probe = lambda path: (True, 5.0 if Path(path) == stub else 200.0, "ok")
+
+    engine.download("job", integrity_env["out"])
+
+    record = _record(integrity_env["events"])
+    assert record["success"] is True
+    # A file in another format never stands in for the requested one.
+    assert record["path"] == str(good)
+    assert stub.exists()
+    assert created[0].known_songs != {}
 
 
 def _ffprobe_answer(

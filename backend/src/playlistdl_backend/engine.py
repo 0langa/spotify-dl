@@ -789,28 +789,35 @@ def _create_downloader(settings: dict[str, Any]) -> Downloader:
         return Downloader({**settings, "scan_for_songs": False})
 
 
-def _known_duplicate_of(downloader: Downloader, song: Song, path: Path | str) -> Path | None:
-    """Return the file spotDL skipped this track for, when that is what it did.
+def _known_duplicates_of(downloader: Downloader, song: Song, path: Path | str) -> list[Path]:
+    """Return the files spotDL skipped this track for, when that is what it did.
 
     spotDL skips a track whose Spotify URL it already found in another file under the
     output folder — one the user renamed, or one saved under an earlier naming preset —
     but reports the path it would have written instead of the file it found. That path
     does not exist, so the track read as a failed download and every alternate source
-    was skipped the same way.
+    was skipped the same way. As for cross-job reuse, only a file in the requested
+    format can stand in for the download.
     """
     try:
         if Path(path).exists():
-            return None
+            return []
     except OSError:
-        return None
+        return []
     known = getattr(downloader, "known_songs", None) or {}
+    suffix = Path(path).suffix.lower()
+    found: list[Path] = []
     for candidate in known.get(str(getattr(song, "url", "") or ""), []):
         try:
-            if _path_key(candidate) != _path_key(path) and Path(candidate).is_file():
-                return Path(candidate)
+            if (
+                _path_key(candidate) != _path_key(path)
+                and Path(candidate).suffix.lower() == suffix
+                and Path(candidate).is_file()
+            ):
+                found.append(Path(candidate))
         except OSError:
             continue
-    return None
+    return found
 
 
 def _forget_known_song(downloader: Downloader, song: Song) -> None:
@@ -1665,20 +1672,24 @@ class Engine:
                 continue
             for resolved_song, path in downloaded:
                 track_id = keys_by_instance.get(id(resolved_song)) or track_key(resolved_song)
-                duplicate = (
-                    _known_duplicate_of(downloader, resolved_song, path)
+                duplicates = (
+                    _known_duplicates_of(downloader, resolved_song, path)
                     if path is not None
-                    else None
+                    else []
                 )
-                record = self._result_record(
-                    resolved_song,
-                    duplicate or path,
-                    track_id=track_id,
+                record: dict[str, Any] | None = None
+                for duplicate in duplicates:
                     # The file spotDL found is the user's own copy, never this job's output.
-                    removable=duplicate is None,
-                )
-                if duplicate is not None and not record["success"]:
-                    # The copy stays where it is; the next attempt downloads the track.
+                    record = self._result_record(
+                        resolved_song, duplicate, track_id=track_id, removable=False
+                    )
+                    if record["success"]:
+                        break
+                if record is None:
+                    record = self._result_record(resolved_song, path, track_id=track_id)
+                elif not record["success"]:
+                    # No copy is usable. They stay where they are, and the next attempt
+                    # downloads the track.
                     _forget_known_song(downloader, resolved_song)
                 results_by_id[track_id] = record
             new_errors = list(downloader.errors[errors_before:])
