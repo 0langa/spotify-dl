@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ctypes
+import functools
+import os
 import re
 from pathlib import Path
 
@@ -59,6 +62,75 @@ def windows_safe_path(path: Path, first_part: int) -> Path:
             part = f"_{part}"
         parts[index] = part
     return Path(*parts)
+
+
+# Without long path support Windows refuses a path of MAX_PATH (260 UTF-16 units, the
+# terminating NUL included) or more.
+_MAX_PATH_UNITS = 259
+# A shortened name leaves room for the longest sibling the downloader writes next to a
+# track ("<file>.partial") and for the longest audio extension, so the same stem fits
+# whichever format and step it is used for.
+_SIBLING_RESERVE = len(".partial")
+_LONGEST_EXTENSION = len(".flac")
+_MIN_STEM_UNITS = 16
+
+
+@functools.cache
+def long_paths_enabled() -> bool:
+    """True when this process may use paths past MAX_PATH, which is always so off Windows.
+
+    Both the LongPathsEnabled policy and a long-path-aware manifest are needed, and
+    RtlAreLongPathsEnabled reports exactly that combination for the running process.
+    """
+    if os.name != "nt":
+        return True
+    try:
+        check = ctypes.WinDLL("ntdll").RtlAreLongPathsEnabled
+    except (OSError, AttributeError):
+        return False
+    check.argtypes = []
+    check.restype = ctypes.c_ubyte
+    return bool(check())
+
+
+def _utf16_units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cut_utf16(text: str, units: int) -> str:
+    """Return the longest prefix of ``text`` that is at most ``units`` UTF-16 units long."""
+    used = 0
+    for index, char in enumerate(text):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            return text[:index]
+    return text
+
+
+def fit_windows_max_path(path: Path, suffix: str = "") -> Path:
+    """Return ``path`` with ``suffix`` added to its name, shortened when Windows needs it.
+
+    Without long path support Windows cannot create, convert, or tag a file whose full
+    path reaches MAX_PATH, and long classical titles under the album preset got there.
+    Only a path that could not be written is changed, and only the stem of its file name:
+    the folders, the collision ``suffix``, and the extension are kept. With long paths
+    enabled every name stays as it is.
+    """
+    named = path.with_name(f"{path.stem}{suffix}{path.suffix}")
+    if long_paths_enabled() or _utf16_units(os.path.abspath(named)) <= _MAX_PATH_UNITS:
+        return named
+    budget = (
+        _MAX_PATH_UNITS
+        - _utf16_units(os.path.abspath(path.parent))
+        - len(os.sep)
+        - _utf16_units(suffix)
+        - _LONGEST_EXTENSION
+        - _SIBLING_RESERVE
+    )
+    # A folder that is itself too long cannot be fixed from the file name; the stem
+    # keeps a readable minimum and the write fails as it did before.
+    stem = _cut_utf16(path.stem, max(budget, _MIN_STEM_UNITS)).rstrip(" .") or "_"
+    return path.with_name(f"{stem}{suffix}{path.suffix}")
 
 
 def write_m3u8(output_dir: Path, name: str, track_paths: list[str]) -> Path:

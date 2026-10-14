@@ -29,7 +29,12 @@ from spotdl.utils.spotify import SpotifyClient
 
 from playlistdl_backend.manifest import load_manifest
 from playlistdl_backend.models import PlaylistDto, TrackDto
-from playlistdl_backend.playlist_file import sanitize_filename, windows_safe_path, write_m3u8
+from playlistdl_backend.playlist_file import (
+    fit_windows_max_path,
+    sanitize_filename,
+    windows_safe_path,
+    write_m3u8,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -745,7 +750,8 @@ def create_output_path(
     """Return spotDL's path for one song, made valid on Windows below the output folder.
 
     Every place that predicts or writes a track's file goes through here, so the reuse,
-    collision, and playlist-file logic always agree with the downloader.
+    collision, and playlist-file logic always agree with the downloader. The name is
+    shortened only when Windows could not write the path otherwise.
     """
     path = spotdl_create_file_name(
         song=song,
@@ -755,7 +761,20 @@ def create_output_path(
         short=short,
         file_name_length=file_name_length,
     )
-    return windows_safe_path(path, _template_root_parts(template))
+    if Path(template).is_absolute() and not path.is_absolute():
+        # spotDL shortens a file name of 255 characters or more by formatting only the
+        # name part of the template, which drops every folder, so the track was written
+        # to the backend's working folder. The folders come from the full template.
+        folder = spotdl_create_file_name(
+            song=song,
+            template=template,
+            file_extension=file_extension,
+            restrict=restrict,
+            short=short,
+            file_name_length=sys.maxsize,
+        ).parent
+        path = folder / path.name
+    return fit_windows_max_path(windows_safe_path(path, _template_root_parts(template)))
 
 
 def _create_file_name_with_collision_suffix(*args: Any, **kwargs: Any) -> Path:
@@ -763,7 +782,7 @@ def _create_file_name_with_collision_suffix(*args: Any, **kwargs: Any) -> Path:
     path = create_output_path(*args, **kwargs)
     song = kwargs.get("song") or args[0]
     suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
-    return path.with_name(f"{path.stem}{suffix}{path.suffix}") if suffix else path
+    return fit_windows_max_path(path, suffix) if suffix else path
 
 
 spotdl_downloader_module.create_file_name = _create_file_name_with_collision_suffix
@@ -838,7 +857,7 @@ def _output_path_for(song: Song, output_template: str, audio_format: str) -> Pat
     suffix = str(getattr(song, _OUTPUT_SUFFIX_ATTRIBUTE, "") or "")
     if not suffix:
         return base_path
-    return base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+    return fit_windows_max_path(base_path, suffix)
 
 
 _TRACK_KEY_ATTRIBUTE = "_playlistdl_track_key"
@@ -906,7 +925,7 @@ def assign_unique_output_suffixes(
             while True:
                 tail = "" if ordinal == 1 else f"-{ordinal}"
                 suffix = f" [{token}{tail}]"
-                candidate = base_path.with_name(f"{base_path.stem}{suffix}{base_path.suffix}")
+                candidate = fit_windows_max_path(base_path, suffix)
                 candidate_key = _path_key(candidate)
                 candidate_owner = known_owner.get(candidate_key)
                 if candidate_owner == str(song.url or "") or (

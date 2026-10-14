@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from playlistdl_backend.playlist_file import sanitize_filename, write_m3u8
+from playlistdl_backend import playlist_file
+from playlistdl_backend.playlist_file import fit_windows_max_path, sanitize_filename, write_m3u8
 
 
 @pytest.mark.parametrize(
@@ -65,3 +67,80 @@ def test_sanitize_filename_escapes_every_windows_device_name(raw: str) -> None:
 @pytest.mark.parametrize("raw", ["Console", "Auxiliary", "COM10", "nul-mix", "Lpt"])
 def test_sanitize_filename_keeps_names_that_only_resemble_devices(raw: str) -> None:
     assert sanitize_filename(raw) == raw
+
+
+@pytest.fixture
+def without_long_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(playlist_file, "long_paths_enabled", lambda: False)
+
+
+def _units(path: Path) -> int:
+    return len(os.path.abspath(path).encode("utf-16-le")) // 2
+
+
+def test_long_path_support_is_detected() -> None:
+    assert isinstance(playlist_file.long_paths_enabled(), bool)
+
+
+@pytest.mark.usefixtures("without_long_paths")
+def test_a_path_that_fits_is_left_alone(tmp_path: Path) -> None:
+    path = tmp_path / "Band" / "01 - Song.mp3"
+
+    assert fit_windows_max_path(path) == path
+    assert fit_windows_max_path(path, " [abc]") == tmp_path / "Band" / "01 - Song [abc].mp3"
+
+
+@pytest.mark.usefixtures("without_long_paths")
+def test_a_too_long_name_is_shortened_until_it_can_be_written(tmp_path: Path) -> None:
+    folder = tmp_path / "Band" / "Album"
+    path = folder / f"01 - {'Symphony No. 9 in D minor, Op. 125 ' * 10}.flac"
+    assert _units(path) > 259
+
+    fitted = fit_windows_max_path(path)
+
+    assert fitted.parent == folder
+    assert fitted.suffix == ".flac"
+    assert fitted.stem.startswith("01 - Symphony No. 9")
+    assert not fitted.stem.endswith((" ", "."))
+    # Room is left for the ".partial" copy the downloader stages next to a reused file.
+    assert _units(fitted.with_name(fitted.name + ".partial")) <= 259
+    folder.mkdir(parents=True)
+    fitted.write_bytes(b"audio")
+    assert fitted.is_file()
+
+
+@pytest.mark.usefixtures("without_long_paths")
+def test_shortening_keeps_the_collision_suffix_and_ignores_the_extension(tmp_path: Path) -> None:
+    stem = "Concerto " * 40
+
+    with_suffix = fit_windows_max_path(tmp_path / f"{stem}.mp3", " [id-12345]")
+
+    assert with_suffix.name.endswith(" [id-12345].mp3")
+    assert _units(with_suffix) <= 259
+    # The same track gets the same stem in every format, so a file from an earlier run
+    # under another format is still recognized.
+    assert (
+        fit_windows_max_path(tmp_path / f"{stem}.mp3").stem
+        == fit_windows_max_path(tmp_path / f"{stem}.opus").stem
+    )
+
+
+@pytest.mark.usefixtures("without_long_paths")
+def test_shortening_counts_utf16_units_and_never_splits_a_character(tmp_path: Path) -> None:
+    note = "\U0001f3b5"  # outside the BMP: two UTF-16 units each
+    path = tmp_path / f"{note * 200}.mp3"
+
+    fitted = fit_windows_max_path(path)
+
+    assert _units(fitted) <= 259
+    fitted.stem.encode("utf-8")  # a split surrogate pair would not encode
+    assert set(fitted.stem) == {note}
+
+
+def test_names_are_never_shortened_with_long_paths_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(playlist_file, "long_paths_enabled", lambda: True)
+    path = tmp_path / f"{'x' * 300}.mp3"
+
+    assert fit_windows_max_path(path) == path
